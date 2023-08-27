@@ -9,8 +9,8 @@ use rayon::prelude::*;
 use crate::utils::{board_to_bitboard, order_moves};
 
 pub struct SearchAlgorithm {
-    evaluator: Arc<tch::CModule>,
-    transposition_table: Arc<Mutex<HashMap<String, (f32, u32)>>>,
+    pub evaluator: Arc<tch::CModule>,
+    pub transposition_table: Arc<Mutex<HashMap<String, (f32, u32)>>>,
     killer_moves: Arc<Mutex<HashMap<u32, BitMove>>>,
     should_stop: Arc<AtomicBool>,
 }
