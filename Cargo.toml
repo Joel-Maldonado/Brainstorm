@@ -1,0 +1,12 @@
+[package]
+name = "brainstorm"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rayon = "1.7.0"
+pleco = "0.5.0"
+tch = "0.13.0"
+ndarray = "0.15"
