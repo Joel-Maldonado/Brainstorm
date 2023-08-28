@@ -106,8 +106,6 @@ impl Engine {
     }
 
     fn parse_go_options(&self, command: &str) -> GoOptions {
-        println!("Received GO Command: {}", command);
-
         let mut options = GoOptions {
             max_time_ms: None,
             max_depth: None,
