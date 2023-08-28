@@ -16,10 +16,10 @@ pub struct SearchAlgorithm {
 }
 
 impl SearchAlgorithm {
-    pub fn new(evaluator: Arc<tch::CModule>) -> Self {
+    pub fn new(evaluator: Arc<tch::CModule>, should_stop: Option<Arc<AtomicBool>>) -> Self {
         let transposition_table = Arc::new(Mutex::new(HashMap::new()));
         let killer_moves = Arc::new(Mutex::new(HashMap::new()));
-        let should_stop = Arc::new(AtomicBool::new(false));
+        let should_stop = should_stop.unwrap_or(Arc::new(AtomicBool::new(false)));
 
         SearchAlgorithm {
             evaluator,

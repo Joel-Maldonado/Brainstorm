@@ -9,23 +9,19 @@ use crate::search_algorithm::SearchAlgorithm;
 pub struct Engine {
     pub board: pleco::Board,
     search_algorithm: SearchAlgorithm,
-    // is_pondering: Arc<AtomicBool>,
 }
 
 
 impl Engine {
     pub fn new(model_path: &str) -> Self {
-        let mut board = pleco::Board::default();
-
+        let board = pleco::Board::default();
         let evaluator = Arc::new(tch::CModule::load(model_path).unwrap());
-        let search_algorithm = SearchAlgorithm::new(evaluator);
         let should_stop = Arc::new(AtomicBool::new(false));
-        // let is_pondering = Arc::new(AtomicBool::new(false));
+        let search_algorithm = SearchAlgorithm::new(evaluator, Some(should_stop));
         
         Engine {
             board,
             search_algorithm,
-            // is_pondering,
         }
     }
 
@@ -72,18 +68,19 @@ impl Engine {
         
         let mut board_clone = self.board.clone();
         let evaluator_clone = self.search_algorithm.evaluator.clone();
-        let search_algo = SearchAlgorithm::new(evaluator_clone);
+
+        let should_stop_clone = self.search_algorithm.should_stop.clone();
 
         let max_time = options.max_time.unwrap_or(999.0);  // set a default
         let max_depth = options.max_depth.unwrap_or(4);  // set a default
 
-        // Spawn a new thread to handle the search
         let _ = thread::spawn(move || {
+            // Pass the should_stop_clone to the SearchAlgorithm
+            let search_algo = SearchAlgorithm::new(evaluator_clone, Some(should_stop_clone));
             let best_move = search_algo.search(&mut board_clone, max_depth, max_time);
-            
-            // Send the best move back via the channel
             tx.send(best_move).expect("Could not send best move");
         });
+        
     }
 
     pub fn stop(&mut self) {
