@@ -50,9 +50,6 @@ fn main() {
                 println!("bestmove {}", best_move.to_string());
                 let mut engine = engine.lock().unwrap();  // Lock the Mutex
                 engine.make_move(best_move);
-
-                println!("{}", engine.search_algorithm.position_count.len());
-
             },
             Err(TryRecvError::Empty) => {
                 // No message received
