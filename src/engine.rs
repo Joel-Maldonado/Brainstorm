@@ -7,23 +7,25 @@ use pleco::BitMove;
 use crate::search_algorithm::SearchAlgorithm;
 
 pub struct Engine {
-    board: pleco::Board,
+    pub board: pleco::Board,
     search_algorithm: SearchAlgorithm,
-    should_stop: Arc<AtomicBool>,
+    // is_pondering: Arc<AtomicBool>,
 }
 
 
 impl Engine {
     pub fn new(model_path: &str) -> Self {
-        let board = pleco::Board::default();
+        let mut board = pleco::Board::default();
+
         let evaluator = Arc::new(tch::CModule::load(model_path).unwrap());
         let search_algorithm = SearchAlgorithm::new(evaluator);
         let should_stop = Arc::new(AtomicBool::new(false));
+        // let is_pondering = Arc::new(AtomicBool::new(false));
         
         Engine {
             board,
             search_algorithm,
-            should_stop,
+            // is_pondering,
         }
     }
 
@@ -58,7 +60,6 @@ impl Engine {
             _ => return, // Malformed command
         }
 
-        // Apply the moves
         for move_str in words {
             if !self.board.apply_uci_move(move_str) {
                 println!("Invalid move: {}", move_str);
@@ -77,19 +78,17 @@ impl Engine {
         let max_depth = options.max_depth.unwrap_or(4);  // set a default
 
         // Spawn a new thread to handle the search
-        let handle = thread::spawn(move || {
+        let _ = thread::spawn(move || {
             let best_move = search_algo.search(&mut board_clone, max_depth, max_time);
             
             // Send the best move back via the channel
             tx.send(best_move).expect("Could not send best move");
         });
-
-        // Optional: wait for the thread to complete
-        // let _ = handle.join();
     }
 
     pub fn stop(&mut self) {
-        self.should_stop.store(true, Ordering::Relaxed);
+        self.search_algorithm.should_stop.store(true, Ordering::Relaxed);
+        println!("Stopped: {}", self.search_algorithm.should_stop.load(Ordering::Relaxed));
     }
 
     fn parse_go_options(&self, command: &str) -> GoOptions {
@@ -105,6 +104,10 @@ impl Engine {
             match option {
                 "depth" => options.max_depth = iter.next().and_then(|s| s.parse().ok()),
                 "movetime" => options.max_time = iter.next().and_then(|s| s.parse().ok()),
+                "infinite" =>  {
+                    options.max_time = Some(999.0);
+                    options.max_depth = Some(999);
+                },
                 _ => {}
             }
         }

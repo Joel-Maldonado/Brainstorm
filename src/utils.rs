@@ -1,16 +1,28 @@
+use std::cmp::Ordering;
+
 use pleco::{Board, Piece, BitMove};
 use tch::Tensor;
 use ndarray::Array2;
 
-pub fn order_moves(board: &pleco::Board, killer_move: Option<&BitMove>) -> Vec<BitMove> {
+pub fn order_moves(board: &pleco::Board, killer_move: Option<&BitMove>, best_move: Option<BitMove>) -> Vec<BitMove> {
     let mut moves = board.generate_moves().to_vec();
-    if let Some(km) = killer_move {
-        if moves.contains(&km) {
-            moves.remove(moves.iter().position(|&x| x == *km).unwrap());
-            moves.insert(0, *km);
+
+    // Prioritize best_move and killer_move
+    moves.sort_by(|&a, &b| {
+        if Some(a) == best_move {
+            Ordering::Less
+        } else if Some(b) == best_move {
+            Ordering::Greater
+        } else if Some(a) == killer_move.copied() {
+            Ordering::Less
+        } else if Some(b) == killer_move.copied() {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
         }
-    }
-    return moves;
+    });
+
+    moves
 }
 
 pub fn board_to_bitboard(board: &Board) -> Tensor {

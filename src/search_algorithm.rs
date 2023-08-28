@@ -12,7 +12,7 @@ pub struct SearchAlgorithm {
     pub evaluator: Arc<tch::CModule>,
     pub transposition_table: Arc<Mutex<HashMap<String, (f32, u32)>>>,
     killer_moves: Arc<Mutex<HashMap<u32, BitMove>>>,
-    should_stop: Arc<AtomicBool>,
+    pub should_stop: Arc<AtomicBool>,
 }
 
 impl SearchAlgorithm {
@@ -29,7 +29,7 @@ impl SearchAlgorithm {
         }
     }
 
-    pub fn minimax(&self, board: &mut pleco::Board, depth: u32, max_time: f32, start_time: Instant, mut alpha: f32, mut beta: f32, maximizing: bool) -> f32 {
+    pub fn minimax(&self, board: &mut pleco::Board, depth: u32, max_time: f32, start_time: Instant, mut alpha: f32, mut beta: f32, maximizing: bool, best_move: Option<BitMove>) -> f32 {
         if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_secs_f32() > max_time) {
             return match board.turn() {
                 Player::White => f32::MAX,
@@ -63,17 +63,18 @@ impl SearchAlgorithm {
 
         let killer_moves_guard = self.killer_moves.lock().unwrap().clone();
         let killer_move = killer_moves_guard.get(&depth);
+        let ordered_moves = order_moves(board, killer_move, best_move);
 
         if maximizing {
             let mut value = f32::MIN;
 
-            for m in order_moves(board, killer_move) {
+            for m in ordered_moves {
                 if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_secs_f32() > max_time) {
                     return f32::MIN;
                 }
 
                 board.apply_move(m);
-                let eval = self.minimax(board, depth - 1, max_time, start_time, alpha, beta, false);
+                let eval = self.minimax(board, depth - 1, max_time, start_time, alpha, beta, false, best_move);
                 board.undo_move();
 
                 value = value.max(eval);
@@ -89,13 +90,13 @@ impl SearchAlgorithm {
         } else {
             let mut value = f32::MAX;
 
-            for m in order_moves(board, killer_move) {
+            for m in ordered_moves {
                 if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_secs_f32() > max_time) {
                     return f32::MAX;
                 }
 
                 board.apply_move(m);
-                let eval = self.minimax(board, depth - 1, max_time, start_time, alpha, beta, true);
+                let eval = self.minimax(board, depth - 1, max_time, start_time, alpha, beta, true, best_move);
                 board.undo_move();
 
                 value = value.min(eval);
@@ -133,7 +134,7 @@ impl SearchAlgorithm {
                     let mut local_board = board.clone();
 
                     local_board.apply_move(m);
-                    let eval = self.minimax(&mut local_board, depth - 1, max_time, start_time, f32::MIN, f32::MAX, false);
+                    let eval = self.minimax(&mut local_board, depth - 1, max_time, start_time, f32::MIN, f32::MAX, false, best_move);
                     local_board.undo_move();
 
                     (eval, m)
@@ -143,14 +144,14 @@ impl SearchAlgorithm {
                     break;
                 }
                 
-                let mut best_score = f32::MIN;
+                let mut best_score = if maximizing { f32::MIN } else { f32::MAX };
                 for (eval, m) in results {
-                    if eval > best_score {
+                    if (maximizing && eval > best_score) || (!maximizing && eval < best_score) {
                         best_score = eval;
-                        best_move = Some(m);
-
+                        best_move = Some(m);  // Update best_move
                     }
                 }
+    
                 
                 let cp_score = best_score * 25.0 * 100.0;
                 println!("info depth {} score cp {} currmove {}", depth, cp_score, best_move.unwrap());
@@ -163,7 +164,7 @@ impl SearchAlgorithm {
                     let mut local_board = board.clone();
 
                     local_board.apply_move(m);
-                    let eval = self.minimax(&mut local_board, depth - 1, max_time, start_time, f32::MIN, f32::MAX, true);
+                    let eval = self.minimax(&mut local_board, depth - 1, max_time, start_time, f32::MIN, f32::MAX, true, best_move);
                     local_board.undo_move();
 
                     (eval, m)
@@ -174,12 +175,11 @@ impl SearchAlgorithm {
                     break;
                 }
 
-                let mut best_score = f32::MAX;
+                let mut best_score = if maximizing { f32::MIN } else { f32::MAX };
                 for (eval, m) in results {
-                    if eval < best_score {
+                    if (maximizing && eval > best_score) || (!maximizing && eval < best_score) {
                         best_score = eval;
-                        best_move = Some(m);
-
+                        best_move = Some(m);  // Update best_move
                     }
                 }
 
@@ -187,6 +187,8 @@ impl SearchAlgorithm {
                 println!("info depth {} score cp {} currmove {}", depth, cp_score, best_move.unwrap());
             }
         }
+
+        println!("Finished in {} seconds", start_time.elapsed().as_secs_f32());
 
         best_move.unwrap_or_else(|| {
             let moves = board.generate_moves();
