@@ -4,7 +4,8 @@ use pleco::{Board, Piece, BitMove};
 use tch::Tensor;
 use ndarray::Array2;
 
-pub fn order_moves(board: &pleco::Board, killer_move: Option<&BitMove>, best_move: Option<BitMove>) -> Vec<BitMove> {
+pub fn order_moves(board: &pleco::Board, killer_move: Option<BitMove>, best_move: Option<BitMove>) -> Vec<BitMove> {
+    // let mut moves = board.generate_moves().to_vec();
     let mut moves = board.generate_moves().to_vec();
 
     // Prioritize best_move and killer_move
@@ -13,9 +14,9 @@ pub fn order_moves(board: &pleco::Board, killer_move: Option<&BitMove>, best_mov
             Ordering::Less
         } else if Some(b) == best_move {
             Ordering::Greater
-        } else if Some(a) == killer_move.copied() {
+        } else if Some(a) == killer_move {
             Ordering::Less
-        } else if Some(b) == killer_move.copied() {
+        } else if Some(b) == killer_move {
             Ordering::Greater
         } else {
             Ordering::Equal

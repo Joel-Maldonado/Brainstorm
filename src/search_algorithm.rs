@@ -1,24 +1,26 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 use pleco::BitMove;
-use tch::nn::Module;
 use pleco::Player;
 use rayon::prelude::*;
+use tch::nn::Module;
 use crate::utils::{board_to_bitboard, order_moves};
+use dashmap::DashMap;  // Import DashMap
 
 pub struct SearchAlgorithm {
     pub evaluator: Arc<tch::CModule>,
-    pub transposition_table: Arc<Mutex<HashMap<String, (f32, u32)>>>,
-    killer_moves: Arc<Mutex<HashMap<u32, BitMove>>>,
+    pub transposition_table: Arc<DashMap<String, (f32, u32)>>,  // Updated to DashMap
+    killer_moves: Arc<DashMap<u32, BitMove>>,  // Updated to DashMap
     pub should_stop: Arc<AtomicBool>,
+    pub position_count: Arc<DashMap<String, u32>>,  // Updated to DashMap
 }
 
+
 impl SearchAlgorithm {
-    pub fn new(evaluator: Arc<tch::CModule>, should_stop: Option<Arc<AtomicBool>>) -> Self {
-        let transposition_table = Arc::new(Mutex::new(HashMap::new()));
-        let killer_moves = Arc::new(Mutex::new(HashMap::new()));
+    pub fn new(evaluator: Arc<tch::CModule>, should_stop: Option<Arc<AtomicBool>>, position_count: Arc<DashMap<String, u32>>) -> Self {
+        let transposition_table = Arc::new(DashMap::new());  // Initialize DashMap
+        let killer_moves = Arc::new(DashMap::new());  // Initialize DashMap
         let should_stop = should_stop.unwrap_or(Arc::new(AtomicBool::new(false)));
 
         SearchAlgorithm {
@@ -26,20 +28,22 @@ impl SearchAlgorithm {
             transposition_table,
             killer_moves,
             should_stop,
+            position_count,
         }
     }
 
-    pub fn minimax(&self, board: &mut pleco::Board, depth: u32, max_time: f32, start_time: Instant, mut alpha: f32, mut beta: f32, maximizing: bool, best_move: Option<BitMove>) -> f32 {
-        if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_secs_f32() > max_time) {
+    pub fn minimax(&self, board: &mut pleco::Board, depth: u32, max_time: u128, start_time: Instant, mut alpha: f32, mut beta: f32, maximizing: bool, best_move: Option<BitMove>) -> f32 {
+        if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_millis() > max_time) {
             return match board.turn() {
                 Player::White => f32::MAX,
                 Player::Black => f32::MIN,
             };
         }
 
+
         let hash_key = board.fen();
 
-        if let Some(t) = self.transposition_table.lock().unwrap().get(&hash_key) {
+        if let Some(t) = self.transposition_table.get(&hash_key) {
             // t is a tuple of (value, depth)
             if t.1 >= depth {
                 return t.0;
@@ -57,19 +61,27 @@ impl SearchAlgorithm {
             return 0.0;
         }
 
+        if let Some(count) = self.position_count.get(&hash_key) {
+            if *count >= 3 {
+                return 0.0;  // Draw due to threefold repetition
+            }
+        }
+    
+
         if depth == 0 {
             return self.evaluator.forward(&board_to_bitboard(&board)).double_value(&[]) as f32;
         }
 
-        let killer_moves_guard = self.killer_moves.lock().unwrap().clone();
-        let killer_move = killer_moves_guard.get(&depth);
+
+        // let killer_move = self.killer_moves.get(&depth);
+        let killer_move = self.killer_moves.get(&depth).map(|r| *r);
         let ordered_moves = order_moves(board, killer_move, best_move);
 
         if maximizing {
             let mut value = f32::MIN;
 
             for m in ordered_moves {
-                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_secs_f32() > max_time) {
+                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_millis() > max_time) {
                     return f32::MIN;
                 }
 
@@ -80,18 +92,18 @@ impl SearchAlgorithm {
                 value = value.max(eval);
                 alpha = alpha.max(eval);
                 if beta <= alpha {
-                    self.killer_moves.lock().unwrap().insert(depth, m);
+                    self.killer_moves.insert(depth, m);
                     break;
                 }
             }
 
-            self.transposition_table.lock().unwrap().clone().insert(hash_key, (value, depth));
+            self.transposition_table.insert(hash_key, (value, depth));
             return value;
         } else {
             let mut value = f32::MAX;
 
             for m in ordered_moves {
-                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_secs_f32() > max_time) {
+                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_millis() > max_time) {
                     return f32::MAX;
                 }
 
@@ -103,17 +115,17 @@ impl SearchAlgorithm {
                 beta = beta.min(eval);
 
                 if beta <= alpha {
-                    self.killer_moves.lock().unwrap().insert(depth, m);
+                    self.killer_moves.insert(depth, m);
                     break;
                 }
             }
 
-            self.transposition_table.lock().unwrap().clone().insert(hash_key, (value, depth));
+            self.transposition_table.insert(hash_key, (value, depth));
             return value;
         }
     }
 
-    pub fn search(&self, board: &mut pleco::Board, max_depth: u32, max_time: f32) -> BitMove {
+    pub fn search(&self, board: &mut pleco::Board, max_depth: u32, max_time: u128) -> BitMove {
         let start_time = Instant::now();
         let maximizing = match board.turn() {
             Player::White => true,
@@ -124,14 +136,14 @@ impl SearchAlgorithm {
 
         if maximizing {
             for depth in 1..=max_depth {
-                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_secs_f32() > max_time){
+                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_millis() > max_time){
                     break;
                 }
 
                 let moves: Vec<BitMove> = board.generate_moves().to_vec();
 
                 let results: Vec<(f32, BitMove)> = moves.par_iter().map(|&m| {
-                    let mut local_board = board.clone();
+                    let mut local_board = board.parallel_clone();
 
                     local_board.apply_move(m);
                     let eval = self.minimax(&mut local_board, depth - 1, max_time, start_time, f32::MIN, f32::MAX, false, best_move);
@@ -140,7 +152,7 @@ impl SearchAlgorithm {
                     (eval, m)
                 }).collect();
 
-                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_secs_f32() > max_time) {
+                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_millis() > max_time) {
                     break;
                 }
                 
@@ -153,15 +165,15 @@ impl SearchAlgorithm {
                 }
     
                 
-                let cp_score = best_score * 25.0 * 100.0;
-                println!("info depth {} score cp {} currmove {}", depth, cp_score, best_move.unwrap());
+                let cp_score = best_score * 25.0;
+                println!("info depth {} score cp {} pv {}", depth, cp_score, best_move.unwrap());
             }
         } else {
             for depth in 1..=max_depth {
                 let moves: Vec<BitMove> = board.generate_moves().to_vec();
 
                 let results: Vec<(f32, BitMove)> = moves.par_iter().map(|&m| {
-                    let mut local_board = board.clone();
+                    let mut local_board = board.parallel_clone();
 
                     local_board.apply_move(m);
                     let eval = self.minimax(&mut local_board, depth - 1, max_time, start_time, f32::MIN, f32::MAX, true, best_move);
@@ -171,7 +183,7 @@ impl SearchAlgorithm {
 
                 }).collect();
 
-                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_secs_f32() > max_time){
+                if self.should_stop.load(Ordering::Relaxed) || (start_time.elapsed().as_millis() > max_time){
                     break;
                 }
 
@@ -183,12 +195,13 @@ impl SearchAlgorithm {
                     }
                 }
 
-                let cp_score = best_score * 25.0 * 100.0;
-                println!("info depth {} score cp {} currmove {}", depth, cp_score, best_move.unwrap());
+                let cp_score = best_score * 25.0;
+                println!("info depth {} score cp {} pv {}", depth, cp_score, best_move.unwrap());
             }
         }
 
         println!("Finished in {} seconds", start_time.elapsed().as_secs_f32());
+
 
         best_move.unwrap_or_else(|| {
             let moves = board.generate_moves();

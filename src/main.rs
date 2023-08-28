@@ -11,7 +11,7 @@ use engine::Engine;
 
 fn main() {
     // Initialize the engine and wrap it in an Arc<Mutex<>>.
-    let engine = Arc::new(Mutex::new(Engine::new("models/eval_params264k_norm_mse0.117666_jit.pt")));
+    let engine = Arc::new(Mutex::new(Engine::new("/home/rnoc/Projects/rust/brainstorm/models/eval_params264k_norm_mse0.117666_jit.pt")));
 
     // Create a channel for communicating best moves
     let (tx, rx) = channel::<BitMove>();
@@ -24,6 +24,8 @@ fn main() {
         let stdin = io::stdin();
         for line in stdin.lock().lines() {
             let command = line.unwrap();
+            println!("Received command: {}", command);
+            
             let mut engine = engine_for_thread.lock().unwrap();  // Lock the Mutex
             match command.split_whitespace().next() {
                 Some("uci") => engine.uci(),
@@ -47,7 +49,10 @@ fn main() {
             Ok(best_move) => {
                 println!("bestmove {}", best_move.to_string());
                 let mut engine = engine.lock().unwrap();  // Lock the Mutex
-                engine.board.apply_move(best_move);
+                engine.make_move(best_move);
+
+                println!("{}", engine.search_algorithm.position_count.len());
+
             },
             Err(TryRecvError::Empty) => {
                 // No message received
