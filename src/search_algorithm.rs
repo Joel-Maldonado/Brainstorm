@@ -1,5 +1,6 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
 use std::sync::Arc;
+use std::sync::mpsc::{Sender, Receiver, channel};
 use std::thread;
 use std::time::{Instant, Duration};
 use pleco::BitMove;
@@ -15,6 +16,7 @@ pub struct SearchAlgorithm {
     killer_moves: Arc<DashMap<u32, BitMove>>,  // Updated to DashMap
     pub should_stop: Arc<AtomicBool>,
     pub position_count: Arc<DashMap<String, u32>>,  // Updated to DashMap
+    pub node_count: Arc<AtomicUsize>,
 }
 
 
@@ -23,6 +25,7 @@ impl SearchAlgorithm {
         let transposition_table = Arc::new(DashMap::new());  // Initialize DashMap
         let killer_moves = Arc::new(DashMap::new());  // Initialize DashMap
         let should_stop = should_stop.unwrap_or(Arc::new(AtomicBool::new(false)));
+        let node_count = Arc::new(AtomicUsize::new(0));
 
         SearchAlgorithm {
             evaluator,
@@ -30,10 +33,13 @@ impl SearchAlgorithm {
             killer_moves,
             should_stop,
             position_count,
+            node_count,
         }
     }
 
     pub fn minimax(&self, board: &mut pleco::Board, depth: u32, max_time: u128, start_time: Instant, mut alpha: f32, mut beta: f32, maximizing: bool, best_move: Option<BitMove>) -> f32 {
+        self.node_count.fetch_add(1, Ordering::Relaxed);
+
         if self.should_stop.load(Ordering::Relaxed) {
             return match board.turn() {
                 Player::White => f32::MAX,
@@ -137,16 +143,22 @@ impl SearchAlgorithm {
     
         let mut best_move: Option<BitMove> = None;
     
+        let (tx, rx): (Sender<bool>, Receiver<bool>) = channel();
         let stop_flag = self.should_stop.clone();  // Clone the Arc<AtomicBool> for the thread
-        let max_time_duration = Duration::from_millis(max_time as u64);  // Convert max_time to a Duration
     
         // Spawn the timer thread
-        thread::spawn(move || {
-            thread::sleep(max_time_duration);
+        let handle = thread::spawn(move || {
+            loop {
+                if rx.try_recv().is_ok() {
+                    break; // Manual Termination signal received.
+                }
+                thread::sleep(Duration::from_millis(50)); // Sleep for a short duration
+            }
             stop_flag.store(true, Ordering::Relaxed);
         });
+
     
-        for depth in 1..=max_depth {
+        'outer: for depth in 1..=max_depth {
             if self.should_stop.load(Ordering::Relaxed) {
                 break;
             }
@@ -171,14 +183,26 @@ impl SearchAlgorithm {
                     best_score = eval;
                     best_move = Some(m);
                 }
+
+                if (eval == std::f32 ::MAX && maximizing) || (eval == std::f32::MIN && !maximizing) {
+                    let cp_score = (best_score * 25.0 * 100.0).round() as i32;
+                    println!("info depth {} score cp {} nodes {} pv {}", depth, cp_score, self.node_count.load(Ordering::Relaxed), best_move.unwrap());
+                    break 'outer;
+                }
             }
     
-            let cp_score = best_score * 25.0;
-            println!("info depth {} score cp {} pv {}", depth, cp_score, best_move.unwrap());
+            let cp_score = (best_score * 25.0 * 100.0).round() as i32;
+            println!("info depth {} score cp {} nodes {} pv {}", depth, cp_score, self.node_count.load(Ordering::Relaxed), best_move.unwrap());
         }
-
-        println!("Finished in {} ms", start_time.elapsed().as_millis());
     
+        // Manually terminate the timer thread
+        tx.send(true).unwrap();
+        handle.join().unwrap();
+    
+    
+        println!("Finished in {} ms", start_time.elapsed().as_millis());
+        
+        self.node_count.store(0, Ordering::Relaxed);    
         best_move.unwrap_or_else(|| {
             let moves = board.generate_moves();
             moves[0]
@@ -186,3 +210,6 @@ impl SearchAlgorithm {
     }
 
 }
+
+
+

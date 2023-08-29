@@ -53,14 +53,14 @@ impl Engine {
             Some("startpos") => {
                 self.board = pleco::Board::default();
                 words.next(); // Skip the "moves" word if present
+
+                for move_str in words {
+                    if !self.board.apply_uci_move(move_str) {
+                        println!("Invalid move: {}", move_str);
+                    }
+                }
             },
             _ => return, // Malformed command
-        }
-
-        for move_str in words {
-            if !self.board.apply_uci_move(move_str) {
-                println!("Invalid move: {}", move_str);
-            }
         }
 
         let fen = self.board.fen();
