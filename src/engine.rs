@@ -96,9 +96,6 @@ impl Engine {
 
     pub fn make_move(&mut self, best_move: BitMove) {
         self.board.apply_move(best_move);
-        let fen = self.board.fen();
-        let mut counter = self.search_algorithm.position_count.entry(fen).or_insert(0);
-        *counter += 1;
     }
 
     pub fn stop(&mut self) {
