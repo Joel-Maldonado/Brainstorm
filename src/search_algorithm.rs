@@ -49,12 +49,6 @@ impl SearchAlgorithm {
 
 
         let hash_key = board.fen();
-        let mut current_count = self.position_count.entry(hash_key.clone()).or_insert(0);
-        *current_count += 1;
-
-        if *current_count >= 3 {
-            return 0.0;  // Draw due to threefold repetition
-        }
 
         if let Some(t) = self.transposition_table.get(&hash_key) {
             // t is a tuple of (value, depth)
@@ -73,6 +67,12 @@ impl SearchAlgorithm {
         if board.stalemate() {
             return 0.0;
         }
+
+        if let Some(count) = self.position_count.get(&hash_key) {
+            if *count >= 3 {
+                return 0.0;  // Draw due to threefold repetition
+            }
+        }
     
 
         if depth == 0 {
@@ -80,6 +80,7 @@ impl SearchAlgorithm {
         }
 
 
+        // let killer_move = self.killer_moves.get(&depth);
         let killer_move = self.killer_moves.get(&depth).map(|r| *r);
         let ordered_moves = order_moves(board, killer_move, best_move);
 
@@ -102,14 +103,6 @@ impl SearchAlgorithm {
                     break;
                 }
             }
-
-            if let Some(mut count) = self.position_count.get_mut(&hash_key) {
-                *count -= 1;
-                if *count == 0 {
-                    self.position_count.remove(&hash_key);
-                }
-            }
-        
 
             self.transposition_table.insert(hash_key, (value, depth));
             return value;
@@ -134,14 +127,6 @@ impl SearchAlgorithm {
                 }
             }
 
-            if let Some(mut count) = self.position_count.get_mut(&hash_key) {
-                *count -= 1;
-                if *count == 0 {
-                    self.position_count.remove(&hash_key);
-                }
-            }
-        
-
             self.transposition_table.insert(hash_key, (value, depth));
             return value;
         }
@@ -149,7 +134,6 @@ impl SearchAlgorithm {
 
     pub fn search(&self, board: &mut pleco::Board, max_depth: u32, max_time: u128) -> BitMove {
         self.should_stop.store(false, Ordering::Relaxed);
-
         let start_time = Instant::now();
     
         let maximizing = match board.turn() {
@@ -224,6 +208,7 @@ impl SearchAlgorithm {
             moves[0]
         })
     }
+
 }
 
 

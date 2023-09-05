@@ -71,7 +71,7 @@ impl Engine {
 
     pub fn go(&mut self, command: &str, tx: Sender<BitMove>) {
         let options = self.parse_go_options(command);
-        
+
         // Cloning necessary states and objects for the new thread
         let mut board_clone = self.board.clone();
         let evaluator_clone = self.search_algorithm.evaluator.clone();
@@ -81,6 +81,8 @@ impl Engine {
         // Set default values if options are not provided
         let max_time = options.max_time_ms.unwrap_or(10_000);
         let max_depth = options.max_depth.unwrap_or(5);
+
+        println!("Searching to depth {} or {} ms", max_depth, max_time);    
     
         // Spawn a new thread to handle the search
         let _ = thread::spawn(move || {
