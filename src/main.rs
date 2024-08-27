@@ -13,7 +13,7 @@ fn main() {
     println!("Brainstorm v0.1");
 
     // Initialize the engine and wrap it in an Arc<Mutex<>>.
-    let engine = Arc::new(Mutex::new(Engine::new("/home/rnoc/Projects/rust/brainstorm/models/eval_params264k_norm_mse0.117666_jit.pt")));
+    let engine = Arc::new(Mutex::new(Engine::new("../models/eval_params264k_norm_mse0.117666_jit.pt")));
 
     // Create a channel for communicating best moves
     let (tx, rx) = channel::<BitMove>();
