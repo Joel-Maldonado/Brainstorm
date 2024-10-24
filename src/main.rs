@@ -15,16 +15,14 @@ use engine::Engine;
 fn main() {
     println!("Brainstorm v0.1");
 
-    // Initialize the engine and wrap it in an Arc<Mutex<>>.
     let engine = Arc::new(Mutex::new(Engine::new(
-        // "models/eval_params264k_norm_mse0.117666_jit.pt",
-        "models/eval_660k_norm_mse_0.026550_jit.pt",
+        "models/eval_params264k_norm_mse0.117666_jit.pt",
+        // "models/eval_660k_norm_mse_0.026550_jit.pt",
     )));
 
     // Create a channel for communicating best moves
     let (tx, rx) = channel::<BitMove>();
 
-    // Create another Arc for the thread
     let engine_for_thread = Arc::clone(&engine);
 
     // Spawn a new thread to read commands from stdin (Loops every time a new command is received)
@@ -34,7 +32,7 @@ fn main() {
             let command = line.unwrap();
             println!("Received command: {}", command);
 
-            let mut engine = engine_for_thread.lock().unwrap(); // Lock the Mutex
+            let mut engine = engine_for_thread.lock().unwrap();
             match command.split_whitespace().next() {
                 Some("uci") => engine.uci(),
                 Some("isready") => engine.isready(),
@@ -56,7 +54,7 @@ fn main() {
         match rx.try_recv() {
             Ok(best_move) => {
                 println!("bestmove {}", best_move.to_string());
-                let mut engine = engine.lock().unwrap(); // Lock the Mutex
+                let mut engine = engine.lock().unwrap();
                 engine.make_move(best_move);
             }
             Err(TryRecvError::Empty) => {
