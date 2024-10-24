@@ -2,7 +2,7 @@
 
 An experimental chess engine built using Rust. It combines deep learning with traditional search techniques to explore alternative approaches to chess AI.
 
-<img width="912" alt="Screenshot 2024-10-23 at 6 04 59 PM" src="https://github.com/user-attachments/assets/b22f3bfb-d127-4862-a539-0a2b10d19ec0">
+<img width="512" alt="Screenshot 2024-10-23 at 6 04 59 PM" src="https://github.com/user-attachments/assets/b22f3bfb-d127-4862-a539-0a2b10d19ec0">
 
 ## The Idea
 
