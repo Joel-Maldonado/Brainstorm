@@ -85,8 +85,9 @@ The compiled engine is **UCI-compatible** and can be used with any chess GUI tha
 The engine now exposes the following UCI options:
 
 * `Hash` (MB)
-* `Threads`
+* `Threads` (controls evaluator intra-op threading; search itself remains single-threaded)
 * `Model` (`small`, `large`, `hybrid_root`)
+* `Device` (`auto`, `cpu`, `cuda`)
 * `DebugLog` (`true`/`false`)
 
 It also supports full go-time controls:
@@ -115,8 +116,9 @@ It also supports full go-time controls:
 Example UCI benchmark sweep:
 
 ```bash
+uv run --python 3.12 env LIBTORCH_USE_PYTORCH=1 cargo build --release
 python3 scripts/bench_uci.py \
-  --engine ./brainstorm \
+  --engine ./target/release/brainstorm \
   --models small,large,hybrid_root \
   --threads 1,2 \
   --hash-mb 64,256 \
@@ -168,6 +170,10 @@ python3 scripts/estimate_elo.py --resume --output-dir results/elo
 ## Current Status
 
 This experimental project aims to explore alternative approaches to chess engine design. While the engine is capable of playing chess, the primary objective is to test concepts related to deep learning in chess, rather than to compete with established engines.
+
+**Estimated strength (local CPU run):**
+
+* Approximately **2100 Elo** (combined estimate: **2114**, 95% CI: **1932-2296**) at roughly **3 seconds per move** on CPU (M3).
 
 **Current areas of exploration:**
 

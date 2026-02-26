@@ -119,13 +119,28 @@ pub fn order_moves(
     history: &HistoryTable,
     side_to_move: Player,
 ) {
-    moves.sort_unstable_by(|a, b| {
-        let sa = move_score(board, *a, tt_move, killers, history, side_to_move);
-        let sb = move_score(board, *b, tt_move, killers, history, side_to_move);
-        sb.cmp(&sa)
-    });
+    let mut scored = Vec::with_capacity(moves.len());
+    for &mv in moves.iter() {
+        scored.push((
+            move_score(board, mv, tt_move, killers, history, side_to_move),
+            mv,
+        ));
+    }
+
+    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    for (idx, (_, mv)) in scored.into_iter().enumerate() {
+        moves[idx] = mv;
+    }
 }
 
 pub fn order_captures(board: &Board, moves: &mut [BitMove]) {
-    moves.sort_unstable_by(|a, b| mvv_lva_score(board, *b).cmp(&mvv_lva_score(board, *a)));
+    let mut scored = Vec::with_capacity(moves.len());
+    for &mv in moves.iter() {
+        scored.push((mvv_lva_score(board, mv), mv));
+    }
+
+    scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    for (idx, (_, mv)) in scored.into_iter().enumerate() {
+        moves[idx] = mv;
+    }
 }

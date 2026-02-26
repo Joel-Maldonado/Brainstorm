@@ -1,9 +1,9 @@
-use crate::utils::{board_to_tensor, order_captures, order_moves, HistoryTable};
+use crate::utils::{encode_board_features, order_captures, order_moves, HistoryTable};
 use pleco::core::GenTypes;
-use pleco::{BitMove, Board, Player};
+use pleco::{BitMove, Board, PieceType, Player};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tch::{CModule, Device};
 
@@ -14,8 +14,12 @@ const EVAL_SCALE_CP: f32 = 2_500.0;
 const MAX_PLY: usize = 128;
 const TIME_CHECK_INTERVAL: u64 = 1_024;
 const DEFAULT_HASH_MB: usize = 64;
+const DEFAULT_EVAL_CACHE_MB: usize = 16;
 const DEFAULT_THREADS: usize = 1;
 const DEFAULT_MAX_DEPTH: u32 = 64;
+const EVAL_CACHE_EMPTY_KEY: u64 = u64::MAX;
+const EVAL_LARGE_KEY_MIX: u64 = 0x9e37_79b9_7f4a_7c15;
+const Q_DELTA_MARGIN_CP: i32 = 120;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelMode {
@@ -68,6 +72,23 @@ pub struct SearchResult {
     pub depth: u32,
     pub nodes: u64,
     pub elapsed: Duration,
+    pub stats: SearchStats,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SearchStats {
+    pub eval_calls: u64,
+    pub eval_cache_hits: u64,
+    pub tt_probes: u64,
+    pub tt_hits: u64,
+    pub q_nodes: u64,
+    pub beta_cutoffs: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct HashTableInfo {
+    pub entries: usize,
+    pub effective_mb: usize,
 }
 
 #[derive(Clone)]
@@ -76,6 +97,8 @@ pub struct SearchAlgorithm {
     large_evaluator: Arc<CModule>,
     eval_device: Device,
     pub should_stop: Arc<AtomicBool>,
+    tt: Arc<Mutex<TranspositionTable>>,
+    eval_cache: Arc<Mutex<EvalCache>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,6 +131,113 @@ impl Default for TTEntry {
     }
 }
 
+struct TranspositionTable {
+    entries: Vec<TTEntry>,
+    mask: usize,
+    generation: u8,
+    configured_hash_mb: usize,
+}
+
+impl TranspositionTable {
+    fn new(hash_mb: usize) -> Self {
+        let entries = tt_entries_from_mb(hash_mb);
+        Self {
+            entries: vec![TTEntry::default(); entries],
+            mask: entries - 1,
+            generation: 1,
+            configured_hash_mb: hash_mb.max(1),
+        }
+    }
+
+    fn ensure_size(&mut self, hash_mb: usize) {
+        let requested = hash_mb.max(1);
+        if requested == self.configured_hash_mb {
+            return;
+        }
+        let entries = tt_entries_from_mb(requested);
+        self.entries = vec![TTEntry::default(); entries];
+        self.mask = entries - 1;
+        self.generation = 1;
+        self.configured_hash_mb = requested;
+    }
+
+    fn next_generation(&mut self) -> u8 {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.entries.fill(TTEntry::default());
+            self.generation = 1;
+        }
+        self.generation
+    }
+
+    fn info_for_hash(hash_mb: usize) -> HashTableInfo {
+        let entries = tt_entries_from_mb(hash_mb.max(1));
+        let effective_mb = entries.saturating_mul(std::mem::size_of::<TTEntry>()) / (1024 * 1024);
+        HashTableInfo {
+            entries,
+            effective_mb,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct EvalCacheEntry {
+    key: u64,
+    score: i32,
+}
+
+impl Default for EvalCacheEntry {
+    fn default() -> Self {
+        Self {
+            key: EVAL_CACHE_EMPTY_KEY,
+            score: 0,
+        }
+    }
+}
+
+struct EvalCache {
+    entries: Vec<EvalCacheEntry>,
+    mask: usize,
+    configured_mb: usize,
+}
+
+impl EvalCache {
+    fn new(cache_mb: usize) -> Self {
+        let entries = eval_cache_entries_from_mb(cache_mb);
+        Self {
+            entries: vec![EvalCacheEntry::default(); entries],
+            mask: entries - 1,
+            configured_mb: cache_mb.max(1),
+        }
+    }
+
+    fn ensure_size(&mut self, cache_mb: usize) {
+        let requested = cache_mb.max(1);
+        if requested == self.configured_mb {
+            return;
+        }
+        let entries = eval_cache_entries_from_mb(requested);
+        self.entries = vec![EvalCacheEntry::default(); entries];
+        self.mask = entries - 1;
+        self.configured_mb = requested;
+    }
+
+    fn probe(&self, key: u64) -> Option<i32> {
+        let idx = (key as usize) & self.mask;
+        let entry = self.entries[idx];
+        if entry.key == key {
+            Some(entry.score)
+        } else {
+            None
+        }
+    }
+
+    fn store(&mut self, key: u64, score: i32) {
+        let idx = (key as usize) & self.mask;
+        self.entries[idx] = EvalCacheEntry { key, score };
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RootOutcome {
     score: i32,
@@ -127,7 +257,13 @@ impl SearchAlgorithm {
             large_evaluator,
             eval_device,
             should_stop,
+            tt: Arc::new(Mutex::new(TranspositionTable::new(DEFAULT_HASH_MB))),
+            eval_cache: Arc::new(Mutex::new(EvalCache::new(DEFAULT_EVAL_CACHE_MB))),
         }
+    }
+
+    pub fn hash_table_info(hash_mb: usize) -> HashTableInfo {
+        TranspositionTable::info_for_hash(hash_mb)
     }
 
     pub fn search(
@@ -172,6 +308,12 @@ impl SearchAlgorithm {
             .hard_time_ms
             .map(|ms| start + Duration::from_millis(ms));
 
+        let mut tt_guard = self.tt.lock().unwrap();
+        tt_guard.ensure_size(options.hash_mb);
+        let tt_generation = tt_guard.next_generation();
+        let mut eval_cache_guard = self.eval_cache.lock().unwrap();
+        eval_cache_guard.ensure_size(DEFAULT_EVAL_CACHE_MB);
+
         let mut ctx = SearchContext::new(
             board,
             &self.small_evaluator,
@@ -179,6 +321,9 @@ impl SearchAlgorithm {
             self.eval_device,
             self.should_stop.as_ref(),
             options,
+            &mut tt_guard,
+            tt_generation,
+            &mut eval_cache_guard,
             soft_deadline,
             hard_deadline,
             game_history,
@@ -199,6 +344,7 @@ impl SearchAlgorithm {
                 depth: 0,
                 nodes: 0,
                 elapsed: start.elapsed(),
+                stats: SearchStats::default(),
             };
         }
 
@@ -275,6 +421,7 @@ impl SearchAlgorithm {
             depth: completed_depth,
             nodes: ctx.nodes,
             elapsed: start.elapsed(),
+            stats: ctx.stats,
         }
     }
 }
@@ -286,14 +433,16 @@ struct SearchContext<'a> {
     should_stop: &'a AtomicBool,
     model_mode: ModelMode,
     _debug_log: bool,
+    tt: &'a mut TranspositionTable,
+    tt_generation: u8,
+    eval_cache: &'a mut EvalCache,
     soft_deadline: Option<Instant>,
     hard_deadline: Option<Instant>,
-    tt: Vec<TTEntry>,
-    tt_mask: usize,
-    generation: u8,
     killers: Vec<[BitMove; 2]>,
     history: HistoryTable,
     repetition_counts: HashMap<u64, u8>,
+    eval_features: [f32; 775],
+    stats: SearchStats,
     nodes: u64,
 }
 
@@ -305,11 +454,13 @@ impl<'a> SearchContext<'a> {
         eval_device: Device,
         should_stop: &'a AtomicBool,
         options: &SearchOptions,
+        tt: &'a mut TranspositionTable,
+        tt_generation: u8,
+        eval_cache: &'a mut EvalCache,
         soft_deadline: Option<Instant>,
         hard_deadline: Option<Instant>,
         game_history: &[u64],
     ) -> Self {
-        let tt_entries = tt_entries_from_mb(options.hash_mb);
         let mut repetition_counts = HashMap::new();
         for &key in game_history {
             let entry = repetition_counts.entry(key).or_insert(0u8);
@@ -328,14 +479,16 @@ impl<'a> SearchContext<'a> {
             should_stop,
             model_mode: options.model_mode,
             _debug_log: options.debug_log,
+            tt,
+            tt_generation,
+            eval_cache,
             soft_deadline,
             hard_deadline,
-            tt: vec![TTEntry::default(); tt_entries],
-            tt_mask: tt_entries - 1,
-            generation: 1,
             killers: vec![[BitMove::null(), BitMove::null()]; MAX_PLY],
             history: [[[0; 64]; 64]; 2],
             repetition_counts,
+            eval_features: [0.0; 775],
+            stats: SearchStats::default(),
             nodes: 0,
         }
     }
@@ -419,6 +572,7 @@ impl<'a> SearchContext<'a> {
             }
 
             if alpha >= beta {
+                self.stats.beta_cutoffs = self.stats.beta_cutoffs.saturating_add(1);
                 if is_quiet {
                     self.store_killer(0, mv);
                     self.update_history(side_to_move, mv, depth);
@@ -501,6 +655,7 @@ impl<'a> SearchContext<'a> {
             }
 
             if score >= beta {
+                self.stats.beta_cutoffs = self.stats.beta_cutoffs.saturating_add(1);
                 return beta;
             }
         }
@@ -572,6 +727,7 @@ impl<'a> SearchContext<'a> {
             }
 
             if alpha >= beta {
+                self.stats.beta_cutoffs = self.stats.beta_cutoffs.saturating_add(1);
                 if is_quiet {
                     self.store_killer(ply, mv);
                     self.update_history(side_to_move, mv, depth);
@@ -600,6 +756,7 @@ impl<'a> SearchContext<'a> {
     }
 
     fn quiescence(&mut self, board: &mut Board, ply: usize, mut alpha: i32, beta: i32) -> i32 {
+        self.stats.q_nodes = self.stats.q_nodes.saturating_add(1);
         if self.bump_node_and_check_stop() {
             return alpha;
         }
@@ -645,6 +802,7 @@ impl<'a> SearchContext<'a> {
                 }
 
                 if score >= beta {
+                    self.stats.beta_cutoffs = self.stats.beta_cutoffs.saturating_add(1);
                     return beta;
                 }
                 if score > alpha {
@@ -657,6 +815,7 @@ impl<'a> SearchContext<'a> {
 
         let stand_pat = self.evaluate(board, ply);
         if stand_pat >= beta {
+            self.stats.beta_cutoffs = self.stats.beta_cutoffs.saturating_add(1);
             return beta;
         }
         if stand_pat > alpha {
@@ -674,6 +833,15 @@ impl<'a> SearchContext<'a> {
                 break;
             }
 
+            let immediate_gain = capture_move_gain(board, mv);
+            if stand_pat
+                .saturating_add(immediate_gain)
+                .saturating_add(Q_DELTA_MARGIN_CP)
+                < alpha
+            {
+                continue;
+            }
+
             board.apply_move(mv);
             let child_key = board.zobrist();
             self.push_repetition(child_key);
@@ -686,6 +854,7 @@ impl<'a> SearchContext<'a> {
             }
 
             if score >= beta {
+                self.stats.beta_cutoffs = self.stats.beta_cutoffs.saturating_add(1);
                 return beta;
             }
             if score > alpha {
@@ -696,27 +865,44 @@ impl<'a> SearchContext<'a> {
         alpha
     }
 
-    fn evaluate(&self, board: &Board, ply: usize) -> i32 {
+    fn evaluate(&mut self, board: &Board, ply: usize) -> i32 {
+        self.stats.eval_calls = self.stats.eval_calls.saturating_add(1);
+
         let use_large = match self.model_mode {
             ModelMode::Small => false,
             ModelMode::Large => true,
             ModelMode::HybridRoot => ply <= 1,
         };
-        let model = if use_large {
+
+        let mut cache_key = board.zobrist() ^ if use_large { EVAL_LARGE_KEY_MIX } else { 0 };
+        if cache_key == EVAL_CACHE_EMPTY_KEY {
+            cache_key ^= 1;
+        }
+        if let Some(score) = self.eval_cache.probe(cache_key) {
+            self.stats.eval_cache_hits = self.stats.eval_cache_hits.saturating_add(1);
+            return score;
+        }
+
+        encode_board_features(board, &mut self.eval_features);
+        let input = tch::Tensor::from_slice(&self.eval_features)
+            .view([1, 775])
+            .to_device(self.eval_device);
+        let raw = if use_large {
             self.large_eval
+                .forward_ts(&[input])
+                .map(|tensor| tensor.double_value(&[]) as f32)
+                .unwrap_or(0.0)
         } else {
             self.small_eval
+                .forward_ts(&[input])
+                .map(|tensor| tensor.double_value(&[]) as f32)
+                .unwrap_or(0.0)
         };
-
-        let input = board_to_tensor(board).to_device(self.eval_device);
-        let raw = model
-            .forward_ts(&[input])
-            .map(|tensor| tensor.double_value(&[]) as f32)
-            .unwrap_or(0.0);
         let mut score = (raw * EVAL_SCALE_CP).round() as i32;
         if board.turn() == Player::Black {
             score = -score;
         }
+        self.eval_cache.store(cache_key, score);
         score
     }
 
@@ -803,21 +989,24 @@ impl<'a> SearchContext<'a> {
 
     fn tt_best_move(&self, key: u64) -> Option<BitMove> {
         let idx = self.tt_index(key);
-        let entry = self.tt[idx];
-        if entry.key == key && !entry.best_move.is_null() {
+        let entry = self.tt.entries[idx];
+        if entry.key == key && entry.generation == self.tt_generation && !entry.best_move.is_null()
+        {
             Some(entry.best_move)
         } else {
             None
         }
     }
 
-    fn probe_tt(&self, key: u64, depth: i16, alpha: i32, beta: i32, ply: usize) -> Option<i32> {
+    fn probe_tt(&mut self, key: u64, depth: i16, alpha: i32, beta: i32, ply: usize) -> Option<i32> {
+        self.stats.tt_probes = self.stats.tt_probes.saturating_add(1);
         let idx = self.tt_index(key);
-        let entry = self.tt[idx];
-        if entry.key != key || entry.depth < depth {
+        let entry = self.tt.entries[idx];
+        if entry.key != key || entry.generation != self.tt_generation || entry.depth < depth {
             return None;
         }
 
+        self.stats.tt_hits = self.stats.tt_hits.saturating_add(1);
         let score = score_from_tt(entry.score, ply);
         match entry.bound {
             Bound::Exact => Some(score),
@@ -837,27 +1026,27 @@ impl<'a> SearchContext<'a> {
         ply: usize,
     ) {
         let idx = self.tt_index(key);
-        let existing = self.tt[idx];
+        let existing = self.tt.entries[idx];
 
         let replace = existing.key != key
-            || existing.generation != self.generation
+            || existing.generation != self.tt_generation
             || depth >= existing.depth
             || (bound == Bound::Exact && existing.bound != Bound::Exact);
 
         if replace {
-            self.tt[idx] = TTEntry {
+            self.tt.entries[idx] = TTEntry {
                 key,
                 depth,
                 score: score_to_tt(score, ply),
                 bound,
                 best_move,
-                generation: self.generation,
+                generation: self.tt_generation,
             };
         }
     }
 
     fn tt_index(&self, key: u64) -> usize {
-        (key as usize) & self.tt_mask
+        (key as usize) & self.tt.mask
     }
 }
 
@@ -871,6 +1060,46 @@ fn tt_entries_from_mb(hash_mb: usize) -> usize {
     } else {
         rounded
     }
+}
+
+fn eval_cache_entries_from_mb(cache_mb: usize) -> usize {
+    let bytes = cache_mb.max(1).saturating_mul(1024 * 1024);
+    let mut entries = bytes / std::mem::size_of::<EvalCacheEntry>().max(1);
+    entries = entries.max(1);
+    let rounded = entries.next_power_of_two();
+    if rounded > entries {
+        (rounded / 2).max(1)
+    } else {
+        rounded
+    }
+}
+
+fn piece_value(piece_type: PieceType) -> i32 {
+    match piece_type {
+        PieceType::P => 100,
+        PieceType::N => 320,
+        PieceType::B => 330,
+        PieceType::R => 500,
+        PieceType::Q => 900,
+        PieceType::K => 20_000,
+        PieceType::None | PieceType::All => 0,
+    }
+}
+
+fn capture_move_gain(board: &Board, mv: BitMove) -> i32 {
+    let captured_value = if mv.is_en_passant() {
+        piece_value(PieceType::P)
+    } else {
+        piece_value(board.piece_at_sq(mv.get_dest()).type_of())
+    };
+
+    let promotion_gain = if mv.is_promo() {
+        piece_value(mv.promo_piece()).saturating_sub(piece_value(PieceType::P))
+    } else {
+        0
+    };
+
+    captured_value.saturating_add(promotion_gain)
 }
 
 fn score_to_tt(score: i32, ply: usize) -> i32 {

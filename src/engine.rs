@@ -52,13 +52,9 @@ impl Engine {
             eprintln!("[engine] {message}");
         }
 
-        let available_threads = std::thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(1);
-
         let options = SearchOptions {
             hash_mb: 64,
-            threads: available_threads,
+            threads: 1,
             model_mode: ModelMode::Small,
             debug_log: false,
         };
@@ -110,6 +106,11 @@ impl Engine {
                 "hash" => {
                     if let Ok(hash_mb) = value.parse::<usize>() {
                         self.options.hash_mb = hash_mb.clamp(1, MAX_HASH_MB);
+                        let info = SearchAlgorithm::hash_table_info(self.options.hash_mb);
+                        println!(
+                            "info string hash_config requested_mb={} effective_mb={} entries={}",
+                            self.options.hash_mb, info.effective_mb, info.entries
+                        );
                     }
                 }
                 "threads" => {
@@ -220,11 +221,17 @@ impl Engine {
             let result = search_algorithm.search(&board_clone, request, &options, &history);
             if options.debug_log {
                 println!(
-                    "info string depth={} score_cp={} nodes={} elapsed_ms={}",
+                    "info string depth={} score_cp={} nodes={} elapsed_ms={} eval_calls={} eval_cache_hits={} tt_probes={} tt_hits={} q_nodes={} beta_cutoffs={}",
                     result.depth,
                     result.score_cp,
                     result.nodes,
-                    result.elapsed.as_millis()
+                    result.elapsed.as_millis(),
+                    result.stats.eval_calls,
+                    result.stats.eval_cache_hits,
+                    result.stats.tt_probes,
+                    result.stats.tt_hits,
+                    result.stats.q_nodes,
+                    result.stats.beta_cutoffs
                 );
             }
             let _ = tx.send(result.best_move);
