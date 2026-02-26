@@ -93,6 +93,13 @@ The engine now exposes the following UCI options:
 Threading scope for this iteration is CPU-first: when the evaluator runs on CUDA, search worker threading is forced to `1`.
 If multithread speedups are weak on your setup, use `setoption name Threads value 1` as a fallback baseline.
 
+Model weight files are now named:
+
+* `models/brainstorm_fast_eval_jit.pt`
+* `models/brainstorm_accurate_eval_jit.pt`
+
+Legacy filenames are still accepted as fallbacks, but `models/eval_660k_norm_mse_0.026550_jit.pt` (the old "large" weight filename) is deprecated.
+
 It also supports full go-time controls:
 
 * `movetime`

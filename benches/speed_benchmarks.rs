@@ -5,13 +5,16 @@ use brainstorm::utils::{
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use pleco::core::GenTypes;
 use pleco::{BitMove, Board};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tch::{CModule, Device};
 
-const SMALL_MODEL_PATH: &str = "models/eval_params264k_norm_mse0.117666_jit.pt";
-const LARGE_MODEL_PATH: &str = "models/eval_660k_norm_mse_0.026550_jit.pt";
+const FAST_MODEL_PATH: &str = "models/brainstorm_fast_eval_jit.pt";
+const ACCURATE_MODEL_PATH: &str = "models/brainstorm_accurate_eval_jit.pt";
+const LEGACY_SMALL_MODEL_PATH: &str = "models/eval_params264k_norm_mse0.117666_jit.pt";
+const LEGACY_LARGE_MODEL_PATH: &str = "models/eval_660k_norm_mse_0.026550_jit.pt";
 
 const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const MIDDLEGAME_FEN: &str = "r2q1rk1/pp1b1ppp/2n1pn2/2bp4/2P5/2NP1NP1/PP2PPBP/R1BQ1RK1 w - - 0 8";
@@ -40,14 +43,36 @@ fn bench_positions() -> Vec<(&'static str, Board)> {
 
 fn load_models() -> &'static BenchModels {
     MODELS.get_or_init(|| {
-        let small = CModule::load_on_device(SMALL_MODEL_PATH, Device::Cpu)
-            .expect("failed to load small model for benchmarks");
-        let large = CModule::load_on_device(LARGE_MODEL_PATH, Device::Cpu)
-            .expect("failed to load large model for benchmarks");
+        let small = load_benchmark_model("fast", FAST_MODEL_PATH, LEGACY_SMALL_MODEL_PATH);
+        let large = load_benchmark_model("accurate", ACCURATE_MODEL_PATH, LEGACY_LARGE_MODEL_PATH);
         BenchModels {
             small: Arc::new(small),
             large: Arc::new(large),
         }
+    })
+}
+
+fn load_benchmark_model(label: &str, primary_path: &str, legacy_path: &str) -> CModule {
+    if Path::new(primary_path).exists() {
+        return CModule::load_on_device(primary_path, Device::Cpu).unwrap_or_else(|_| {
+            panic!("failed to load {label} model for benchmarks from `{primary_path}`")
+        });
+    }
+
+    if Path::new(legacy_path).exists() {
+        eprintln!(
+            "[bench] deprecated model filename `{}` detected; rename to `{}`",
+            legacy_path, primary_path
+        );
+        return CModule::load_on_device(legacy_path, Device::Cpu).unwrap_or_else(|_| {
+            panic!("failed to load {label} model for benchmarks from `{legacy_path}`")
+        });
+    }
+
+    CModule::load_on_device(primary_path, Device::Cpu).unwrap_or_else(|_| {
+        panic!(
+            "failed to load {label} model for benchmarks from `{primary_path}` (legacy `{legacy_path}` is also accepted)"
+        )
     })
 }
 

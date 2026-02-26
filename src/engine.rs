@@ -1,5 +1,6 @@
 use crate::search_algorithm::{ModelMode, SearchAlgorithm, SearchOptions, SearchRequest};
 use pleco::{BitMove, Board, Player};
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
@@ -7,8 +8,10 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use tch::{CModule, Device};
 
-const SMALL_MODEL_PATH: &str = "models/eval_params264k_norm_mse0.117666_jit.pt";
-const LARGE_MODEL_PATH: &str = "models/eval_660k_norm_mse_0.026550_jit.pt";
+const FAST_MODEL_PATH: &str = "models/brainstorm_fast_eval_jit.pt";
+const ACCURATE_MODEL_PATH: &str = "models/brainstorm_accurate_eval_jit.pt";
+const LEGACY_SMALL_MODEL_PATH: &str = "models/eval_params264k_norm_mse0.117666_jit.pt";
+const LEGACY_LARGE_MODEL_PATH: &str = "models/eval_660k_norm_mse_0.026550_jit.pt";
 const MAX_HASH_MB: usize = 4096;
 const DEFAULT_FALLBACK_MOVETIME_MS: u64 = 2_000;
 
@@ -420,21 +423,17 @@ impl Engine {
         device: Device,
         should_stop: Arc<AtomicBool>,
     ) -> Result<SearchAlgorithm, String> {
-        let small_evaluator = CModule::load_on_device(SMALL_MODEL_PATH, device).map_err(|err| {
-            format!(
-                "small model load failed on {}: {err}",
-                device_to_label(device)
-            )
-        })?;
-        let large_evaluator = CModule::load_on_device(LARGE_MODEL_PATH, device).map_err(|err| {
-            format!(
-                "large model load failed on {}: {err}",
-                device_to_label(device)
-            )
-        })?;
+        let small_evaluator =
+            Self::load_model_module("fast", FAST_MODEL_PATH, LEGACY_SMALL_MODEL_PATH, device)?;
+        let large_evaluator = Self::load_model_module(
+            "accurate",
+            ACCURATE_MODEL_PATH,
+            LEGACY_LARGE_MODEL_PATH,
+            device,
+        )?;
 
-        Self::probe_model_forward(&small_evaluator, device, "small")?;
-        Self::probe_model_forward(&large_evaluator, device, "large")?;
+        Self::probe_model_forward(&small_evaluator, device, "fast")?;
+        Self::probe_model_forward(&large_evaluator, device, "accurate")?;
 
         let small_evaluator = Arc::new(small_evaluator);
         let large_evaluator = Arc::new(large_evaluator);
@@ -444,6 +443,41 @@ impl Engine {
             device,
             should_stop,
         ))
+    }
+
+    fn load_model_module(
+        label: &str,
+        primary_path: &str,
+        legacy_path: &str,
+        device: Device,
+    ) -> Result<CModule, String> {
+        let load_from = |path: &str| {
+            CModule::load_on_device(path, device).map_err(|err| {
+                format!(
+                    "{label} model load failed on {} from `{path}`: {err}",
+                    device_to_label(device)
+                )
+            })
+        };
+
+        if Path::new(primary_path).exists() {
+            return load_from(primary_path);
+        }
+
+        if Path::new(legacy_path).exists() {
+            eprintln!(
+                "[engine] deprecated model filename `{}` detected; rename to `{}`",
+                legacy_path, primary_path
+            );
+            return load_from(legacy_path);
+        }
+
+        load_from(primary_path).map_err(|err| {
+            format!(
+                "{err}; expected `{}` (legacy `{}` is also accepted)",
+                primary_path, legacy_path
+            )
+        })
     }
 
     fn probe_model_forward(model: &CModule, device: Device, label: &str) -> Result<(), String> {
