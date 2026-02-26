@@ -28,6 +28,7 @@ POSITIONS: Dict[str, str] = {
     "king_attack": "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P4/2PBPN2/PPQ2PPP/R1B2RK1 w - - 0 9",
     "imbalanced": "r2q1rk1/pbpn1pp1/1p1bpn1p/3p4/3P4/2NBPN2/PPQ2PPP/R1B2RK1 w - - 2 10",
 }
+THREAD_DEFAULT_CAP = 8
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,24 @@ def parse_csv_ints(value: str) -> List[int]:
             parsed.append(int(item))
         except ValueError as exc:
             raise argparse.ArgumentTypeError(f"invalid integer: {item}") from exc
+    return parsed
+
+
+def default_threads() -> int:
+    return max(1, min(os.cpu_count() or 1, THREAD_DEFAULT_CAP))
+
+
+def parse_thread_values(value: str) -> List[int]:
+    parsed: List[int] = []
+    auto_value = default_threads()
+    for item in parse_csv_items(value):
+        if item.lower() == "auto":
+            parsed.append(auto_value)
+            continue
+        try:
+            parsed.append(int(item))
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"invalid thread value: {item}") from exc
     return parsed
 
 
@@ -228,8 +247,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--threads",
-        default="1",
-        help="Comma-separated thread counts",
+        default="auto",
+        help="Comma-separated thread counts (`auto` resolves to min(cpu_count, 8))",
     )
     parser.add_argument(
         "--hash-mb",
@@ -284,7 +303,7 @@ def main() -> None:
         raise SystemExit("--warmup must be >= 0")
 
     models = parse_csv_items(args.models)
-    thread_values = parse_csv_ints(args.threads)
+    thread_values = parse_thread_values(args.threads)
     hash_values = parse_csv_ints(args.hash_mb)
 
     depth_values = parse_csv_ints(args.depths)

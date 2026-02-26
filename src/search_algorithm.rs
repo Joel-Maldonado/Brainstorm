@@ -1,9 +1,10 @@
 use crate::utils::{encode_board_features, order_captures, order_moves, HistoryTable};
 use pleco::core::GenTypes;
 use pleco::{BitMove, Board, PieceType, Player};
+use rayon::ThreadPoolBuilder;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 use tch::{CModule, Device};
 
@@ -15,11 +16,12 @@ const MAX_PLY: usize = 128;
 const TIME_CHECK_INTERVAL: u64 = 1_024;
 const DEFAULT_HASH_MB: usize = 64;
 const DEFAULT_EVAL_CACHE_MB: usize = 16;
-const DEFAULT_THREADS: usize = 1;
+const DEFAULT_THREADS_CAP: usize = 8;
 const DEFAULT_MAX_DEPTH: u32 = 64;
 const EVAL_CACHE_EMPTY_KEY: u64 = u64::MAX;
 const EVAL_LARGE_KEY_MIX: u64 = 0x9e37_79b9_7f4a_7c15;
 const Q_DELTA_MARGIN_CP: i32 = 120;
+static SET_INTEROP_THREADS_ONCE: Once = Once::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ModelMode {
@@ -51,7 +53,7 @@ impl Default for SearchOptions {
     fn default() -> Self {
         Self {
             hash_mb: DEFAULT_HASH_MB,
-            threads: DEFAULT_THREADS,
+            threads: default_search_threads(),
             model_mode: ModelMode::Small,
             debug_log: false,
         }
@@ -83,6 +85,17 @@ pub struct SearchStats {
     pub tt_hits: u64,
     pub q_nodes: u64,
     pub beta_cutoffs: u64,
+}
+
+impl SearchStats {
+    fn saturating_add_assign(&mut self, other: SearchStats) {
+        self.eval_calls = self.eval_calls.saturating_add(other.eval_calls);
+        self.eval_cache_hits = self.eval_cache_hits.saturating_add(other.eval_cache_hits);
+        self.tt_probes = self.tt_probes.saturating_add(other.tt_probes);
+        self.tt_hits = self.tt_hits.saturating_add(other.tt_hits);
+        self.q_nodes = self.q_nodes.saturating_add(other.q_nodes);
+        self.beta_cutoffs = self.beta_cutoffs.saturating_add(other.beta_cutoffs);
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -245,6 +258,34 @@ struct RootOutcome {
     completed: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RootMoveEval {
+    index: usize,
+    mv: BitMove,
+    score: i32,
+    completed: bool,
+    nodes: u64,
+    stats: SearchStats,
+}
+
+struct ParallelWorkerState {
+    tt: TranspositionTable,
+    tt_generation: u8,
+    eval_cache: EvalCache,
+}
+
+impl ParallelWorkerState {
+    fn new(hash_mb: usize, eval_cache_mb: usize) -> Self {
+        let mut tt = TranspositionTable::new(hash_mb);
+        let tt_generation = tt.next_generation();
+        Self {
+            tt,
+            tt_generation,
+            eval_cache: EvalCache::new(eval_cache_mb),
+        }
+    }
+}
+
 impl SearchAlgorithm {
     pub fn new(
         small_evaluator: Arc<CModule>,
@@ -264,6 +305,10 @@ impl SearchAlgorithm {
 
     pub fn hash_table_info(hash_mb: usize) -> HashTableInfo {
         TranspositionTable::info_for_hash(hash_mb)
+    }
+
+    pub fn default_threads() -> usize {
+        default_search_threads()
     }
 
     pub fn search(
@@ -298,8 +343,12 @@ impl SearchAlgorithm {
         let start = Instant::now();
         let _no_grad = tch::no_grad_guard();
 
-        let requested_threads = options.threads.max(1).min(i32::MAX as usize) as i32;
-        tch::set_num_threads(requested_threads);
+        // Search workers now come from `Threads`; keep evaluator intra/inter-op threads
+        // at 1 to avoid oversubscription when root search is parallel.
+        tch::set_num_threads(1);
+        SET_INTEROP_THREADS_ONCE.call_once(|| {
+            tch::set_num_interop_threads(1);
+        });
 
         let soft_deadline = request
             .soft_time_ms
@@ -308,6 +357,66 @@ impl SearchAlgorithm {
             .hard_time_ms
             .map(|ms| start + Duration::from_millis(ms));
 
+        let legal_moves = board.generate_moves();
+        let fallback_move = if legal_moves.is_empty() {
+            BitMove::null()
+        } else {
+            legal_moves[0]
+        };
+
+        if fallback_move.is_null() {
+            return SearchResult {
+                best_move: BitMove::null(),
+                score_cp: 0,
+                depth: 0,
+                nodes: 0,
+                elapsed: start.elapsed(),
+                stats: SearchStats::default(),
+            };
+        }
+
+        let max_depth = request.max_depth.max(1).min(DEFAULT_MAX_DEPTH);
+        let effective_threads = self.effective_search_threads(options, legal_moves.len());
+        if effective_threads <= 1 {
+            return self.search_single_threaded(
+                board,
+                options,
+                game_history,
+                soft_deadline,
+                hard_deadline,
+                max_depth,
+                fallback_move,
+                emit_info,
+                start,
+            );
+        }
+
+        self.search_parallel_root(
+            board,
+            options,
+            game_history,
+            soft_deadline,
+            hard_deadline,
+            max_depth,
+            fallback_move,
+            effective_threads,
+            emit_info,
+            start,
+        )
+    }
+
+    fn search_single_threaded(
+        &self,
+        board: &Board,
+        options: &SearchOptions,
+        game_history: &[u64],
+        soft_deadline: Option<Instant>,
+        hard_deadline: Option<Instant>,
+        max_depth: u32,
+        fallback_move: BitMove,
+        emit_info: bool,
+        start: Instant,
+    ) -> SearchResult {
         let mut tt_guard = self.tt.lock().unwrap();
         tt_guard.ensure_size(options.hash_mb);
         let tt_generation = tt_guard.next_generation();
@@ -330,25 +439,6 @@ impl SearchAlgorithm {
         );
 
         let mut root_board = board.shallow_clone();
-        let legal_moves = root_board.generate_moves();
-        let fallback_move = if legal_moves.is_empty() {
-            BitMove::null()
-        } else {
-            legal_moves[0]
-        };
-
-        if fallback_move.is_null() {
-            return SearchResult {
-                best_move: BitMove::null(),
-                score_cp: 0,
-                depth: 0,
-                nodes: 0,
-                elapsed: start.elapsed(),
-                stats: SearchStats::default(),
-            };
-        }
-
-        let max_depth = request.max_depth.max(1).min(DEFAULT_MAX_DEPTH);
         let mut best_move = fallback_move;
         let mut best_score = 0;
         let mut completed_depth = 0_u32;
@@ -424,6 +514,310 @@ impl SearchAlgorithm {
             stats: ctx.stats,
         }
     }
+
+    fn search_parallel_root(
+        &self,
+        board: &Board,
+        options: &SearchOptions,
+        game_history: &[u64],
+        soft_deadline: Option<Instant>,
+        hard_deadline: Option<Instant>,
+        max_depth: u32,
+        fallback_move: BitMove,
+        worker_threads: usize,
+        emit_info: bool,
+        start: Instant,
+    ) -> SearchResult {
+        let pool = match ThreadPoolBuilder::new().num_threads(worker_threads).build() {
+            Ok(pool) => pool,
+            Err(_) => {
+                return self.search_single_threaded(
+                    board,
+                    options,
+                    game_history,
+                    soft_deadline,
+                    hard_deadline,
+                    max_depth,
+                    fallback_move,
+                    emit_info,
+                    start,
+                );
+            }
+        };
+
+        let mut root_moves = board.generate_moves().to_vec();
+        if root_moves.is_empty() {
+            return SearchResult {
+                best_move: BitMove::null(),
+                score_cp: 0,
+                depth: 0,
+                nodes: 0,
+                elapsed: start.elapsed(),
+                stats: SearchStats::default(),
+            };
+        }
+
+        let hash_budgets = split_mb_budget(options.hash_mb.max(worker_threads), worker_threads);
+        let eval_cache_budgets = split_mb_budget(DEFAULT_EVAL_CACHE_MB, worker_threads);
+        let worker_states: Vec<Mutex<ParallelWorkerState>> = hash_budgets
+            .iter()
+            .zip(eval_cache_budgets.iter())
+            .map(|(&hash_mb, &eval_cache_mb)| {
+                Mutex::new(ParallelWorkerState::new(hash_mb, eval_cache_mb))
+            })
+            .collect();
+
+        let mut best_move = fallback_move;
+        let mut best_score = 0;
+        let mut completed_depth = 0_u32;
+        let mut total_nodes = 0_u64;
+        let mut total_stats = SearchStats::default();
+
+        for depth in 1..=max_depth {
+            if self.should_abort_search(hard_deadline) {
+                break;
+            }
+
+            if let Some(best_idx) = root_moves.iter().position(|mv| *mv == best_move) {
+                root_moves.swap(0, best_idx);
+            }
+
+            let evals = self.evaluate_root_parallel_depth(
+                &pool,
+                board,
+                &root_moves,
+                depth as i32,
+                options,
+                game_history,
+                soft_deadline,
+                hard_deadline,
+                &worker_states,
+            );
+
+            if evals.is_empty() {
+                break;
+            }
+
+            let mut completed = evals.len() == root_moves.len();
+            for eval in &evals {
+                total_nodes = total_nodes.saturating_add(eval.nodes);
+                total_stats.saturating_add_assign(eval.stats);
+                if !eval.completed {
+                    completed = false;
+                }
+            }
+
+            if !completed {
+                break;
+            }
+
+            if let Some(best_eval) = evals
+                .into_iter()
+                .max_by(|a, b| a.score.cmp(&b.score).then_with(|| b.index.cmp(&a.index)))
+            {
+                best_move = best_eval.mv;
+                best_score = best_eval.score;
+                completed_depth = depth;
+            }
+
+            if emit_info {
+                let (score_kind, score_value) = score_to_uci(best_score);
+                println!(
+                    "info depth {} score {} {} nodes {} time {} pv {}",
+                    depth,
+                    score_kind,
+                    score_value,
+                    total_nodes,
+                    start.elapsed().as_millis(),
+                    best_move
+                );
+            }
+
+            if soft_deadline_reached(soft_deadline) {
+                break;
+            }
+        }
+
+        SearchResult {
+            best_move,
+            score_cp: best_score,
+            depth: completed_depth,
+            nodes: total_nodes,
+            elapsed: start.elapsed(),
+            stats: total_stats,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_root_parallel_depth(
+        &self,
+        pool: &rayon::ThreadPool,
+        board: &Board,
+        root_moves: &[BitMove],
+        depth: i32,
+        options: &SearchOptions,
+        game_history: &[u64],
+        soft_deadline: Option<Instant>,
+        hard_deadline: Option<Instant>,
+        worker_states: &[Mutex<ParallelWorkerState>],
+    ) -> Vec<RootMoveEval> {
+        let next_idx = AtomicUsize::new(0);
+        let results = Mutex::new(Vec::with_capacity(root_moves.len()));
+
+        pool.scope(|scope| {
+            for worker_idx in 0..worker_states.len() {
+                let worker_state_ref = &worker_states[worker_idx];
+                let next_idx_ref = &next_idx;
+                let results_ref = &results;
+                let root_moves_ref = root_moves;
+                let game_history_ref = game_history;
+                let options_ref = options;
+                let board_ref = board;
+                scope.spawn(move |_| {
+                    let mut worker_state = worker_state_ref.lock().unwrap();
+
+                    loop {
+                        if self.should_abort_search(hard_deadline) {
+                            break;
+                        }
+                        let move_idx = next_idx_ref.fetch_add(1, Ordering::Relaxed);
+                        if move_idx >= root_moves_ref.len() {
+                            break;
+                        }
+
+                        let tt_generation = worker_state.tt_generation;
+                        let outcome = self.evaluate_root_move(
+                            board_ref,
+                            move_idx,
+                            root_moves_ref[move_idx],
+                            depth,
+                            options_ref,
+                            game_history_ref,
+                            soft_deadline,
+                            hard_deadline,
+                            &mut worker_state.tt,
+                            tt_generation,
+                            &mut worker_state.eval_cache,
+                        );
+
+                        if !outcome.completed {
+                            self.should_stop.store(true, Ordering::Relaxed);
+                        }
+                        results_ref.lock().unwrap().push(outcome);
+                    }
+                });
+            }
+        });
+
+        let mut collected = results.into_inner().unwrap();
+        collected.sort_by_key(|eval| eval.index);
+        collected
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_root_move(
+        &self,
+        board: &Board,
+        index: usize,
+        mv: BitMove,
+        depth: i32,
+        options: &SearchOptions,
+        game_history: &[u64],
+        soft_deadline: Option<Instant>,
+        hard_deadline: Option<Instant>,
+        tt: &mut TranspositionTable,
+        tt_generation: u8,
+        eval_cache: &mut EvalCache,
+    ) -> RootMoveEval {
+        let mut worker_board = board.shallow_clone();
+        let mut ctx = SearchContext::new(
+            &worker_board,
+            &self.small_evaluator,
+            &self.large_evaluator,
+            self.eval_device,
+            self.should_stop.as_ref(),
+            options,
+            tt,
+            tt_generation,
+            eval_cache,
+            soft_deadline,
+            hard_deadline,
+            game_history,
+        );
+
+        worker_board.apply_move(mv);
+        let child_key = worker_board.zobrist();
+        ctx.push_repetition(child_key);
+        let score = -ctx.negamax(&mut worker_board, depth - 1, 1, -INF, INF, true);
+        ctx.pop_repetition(child_key);
+        worker_board.undo_move();
+
+        RootMoveEval {
+            index,
+            mv,
+            score,
+            completed: !ctx.should_abort(),
+            nodes: ctx.nodes,
+            stats: ctx.stats,
+        }
+    }
+
+    fn effective_search_threads(&self, options: &SearchOptions, legal_moves: usize) -> usize {
+        if self.eval_device.is_cuda() {
+            return 1;
+        }
+
+        let mut workers = options.threads.max(1);
+        let max_hw_threads = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1);
+
+        workers = workers.min(max_hw_threads);
+        workers = workers.min(legal_moves.max(1));
+        workers = workers.min(options.hash_mb.max(1));
+        workers.max(1)
+    }
+
+    fn should_abort_search(&self, hard_deadline: Option<Instant>) -> bool {
+        if self.should_stop.load(Ordering::Relaxed) {
+            return true;
+        }
+        if let Some(deadline) = hard_deadline {
+            if Instant::now() >= deadline {
+                self.should_stop.store(true, Ordering::Relaxed);
+                return true;
+            }
+        }
+        false
+    }
+}
+
+fn default_search_threads() -> usize {
+    let hw_threads = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    hw_threads.clamp(1, DEFAULT_THREADS_CAP)
+}
+
+fn soft_deadline_reached(soft_deadline: Option<Instant>) -> bool {
+    if let Some(deadline) = soft_deadline {
+        return Instant::now() >= deadline;
+    }
+    false
+}
+
+fn split_mb_budget(total_mb: usize, workers: usize) -> Vec<usize> {
+    if workers == 0 {
+        return Vec::new();
+    }
+
+    let base = total_mb / workers;
+    let remainder = total_mb % workers;
+    let mut out = Vec::with_capacity(workers);
+    for idx in 0..workers {
+        out.push(base + usize::from(idx < remainder));
+    }
+    out
 }
 
 struct SearchContext<'a> {

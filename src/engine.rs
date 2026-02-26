@@ -54,7 +54,7 @@ impl Engine {
 
         let options = SearchOptions {
             hash_mb: 64,
-            threads: 1,
+            threads: SearchAlgorithm::default_threads(),
             model_mode: ModelMode::Small,
             debug_log: false,
         };

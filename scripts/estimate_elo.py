@@ -33,6 +33,7 @@ CI_Z = 1.96
 MIN_ANCHOR_STD_ELO = 1.0
 DEFAULT_STOCKFISH_ELO_MIN = 1200
 DEFAULT_STOCKFISH_ELO_MAX = 3200
+THREAD_DEFAULT_CAP = 8
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,23 @@ def parse_sf_elos(value: str) -> List[int]:
         except ValueError as exc:
             raise argparse.ArgumentTypeError(f"invalid Elo value: {item}") from exc
     return parsed
+
+
+def default_threads() -> int:
+    return max(1, min(os.cpu_count() or 1, THREAD_DEFAULT_CAP))
+
+
+def resolve_threads_arg(raw: int | str) -> int:
+    if isinstance(raw, int):
+        return raw
+
+    token = str(raw).strip().lower()
+    if token == "auto":
+        return default_threads()
+    try:
+        return int(token)
+    except ValueError as exc:
+        raise EloEstimatorError(f"invalid --threads value: {raw}") from exc
 
 
 def resolve_engine_path(path_or_name: str, label: str) -> str:
@@ -723,7 +741,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--pairs-per-elo", type=int, default=12, help="Opening pairs per Stockfish Elo")
     parser.add_argument("--movetime-ms", type=int, default=200, help="Fixed movetime for both engines")
-    parser.add_argument("--threads", type=int, default=1, help="Threads for both engines")
+    parser.add_argument(
+        "--threads",
+        default="auto",
+        help="Threads for both engines (`auto` resolves to min(cpu_count, 8))",
+    )
     parser.add_argument("--hash-mb", type=int, default=64, help="Hash MB for both engines")
     parser.add_argument(
         "--brainstorm-device",
@@ -756,11 +778,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> int:
     require_python_chess()
 
+    threads = resolve_threads_arg(args.threads)
+
     if args.pairs_per_elo < 1:
         raise EloEstimatorError("--pairs-per-elo must be >= 1")
     if args.movetime_ms < 1:
         raise EloEstimatorError("--movetime-ms must be >= 1")
-    if args.threads < 1:
+    if threads < 1:
         raise EloEstimatorError("--threads must be >= 1")
     if args.hash_mb < 1:
         raise EloEstimatorError("--hash-mb must be >= 1")
@@ -822,7 +846,7 @@ def run(args: argparse.Namespace) -> int:
             brainstorm_path=brainstorm_path,
             stockfish_path=stockfish_path,
             movetime_ms=args.movetime_ms,
-            threads=args.threads,
+            threads=threads,
             hash_mb=args.hash_mb,
             brainstorm_device=args.brainstorm_device,
             max_plies=args.max_plies,
@@ -844,7 +868,7 @@ def run(args: argparse.Namespace) -> int:
             "sf_elo_range": [sf_elo_min, sf_elo_max],
             "pairs_per_elo": args.pairs_per_elo,
             "movetime_ms": args.movetime_ms,
-            "threads": args.threads,
+            "threads": threads,
             "hash_mb": args.hash_mb,
             "brainstorm_device": args.brainstorm_device,
             "openings": str(args.openings.resolve()),

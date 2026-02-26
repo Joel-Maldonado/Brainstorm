@@ -35,7 +35,7 @@ class TimeControlTest(unittest.TestCase):
         movetimes_ms = [100, 500, 2000]
 
         with chess.engine.SimpleEngine.popen_uci(str(engine_path), env=_prepare_env()) as engine:
-            engine.configure({"Hash": 64, "Threads": 1, "Model": "small", "DebugLog": False})
+            engine.configure({"Hash": 64, "Threads": 4, "Model": "small", "DebugLog": False})
 
             for movetime_ms in movetimes_ms:
                 t0 = time.perf_counter()

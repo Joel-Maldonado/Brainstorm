@@ -85,10 +85,13 @@ The compiled engine is **UCI-compatible** and can be used with any chess GUI tha
 The engine now exposes the following UCI options:
 
 * `Hash` (MB)
-* `Threads` (controls evaluator intra-op threading; search itself remains single-threaded)
+* `Threads` (controls root search worker threads; default is `min(available cores, 8)`)
 * `Model` (`small`, `large`, `hybrid_root`)
 * `Device` (`auto`, `cpu`, `cuda`)
 * `DebugLog` (`true`/`false`)
+
+Threading scope for this iteration is CPU-first: when the evaluator runs on CUDA, search worker threading is forced to `1`.
+If multithread speedups are weak on your setup, use `setoption name Threads value 1` as a fallback baseline.
 
 It also supports full go-time controls:
 
@@ -120,7 +123,6 @@ uv run --python 3.12 env LIBTORCH_USE_PYTORCH=1 cargo build --release
 python3 scripts/bench_uci.py \
   --engine ./target/release/brainstorm \
   --models small,large,hybrid_root \
-  --threads 1,2 \
   --hash-mb 64,256 \
   --depths 4,6 \
   --movetimes-ms 100,250,500 \
@@ -142,6 +144,8 @@ python3 scripts/estimate_elo.py \
   --movetime-ms 200 \
   --brainstorm-device auto
 ```
+
+Both scripts now default `--threads` to the same auto policy (`min(available cores, 8)`), and you can override it explicitly (for example, `--threads 1`).
 
 The script writes:
 
