@@ -7,7 +7,6 @@ ENGINE_PATH = (
     "./brainstorm"  # Expecting 'brainstorm' executable must be in root directory!
 )
 
-
 class ChessGUI:
     def __init__(self):
         pygame.init()
