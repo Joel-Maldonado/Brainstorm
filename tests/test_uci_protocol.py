@@ -48,7 +48,7 @@ class UCIProtocolTest(unittest.TestCase):
 
         try:
             with chess.engine.SimpleEngine.popen_uci(str(engine_path), env=_prepare_env()) as engine:
-                engine.configure({"Hash": 64, "Threads": 1, "Model": "small", "DebugLog": False})
+                engine.configure({"Hash": 64, "Threads": 1, "Model": "fast", "DebugLog": False})
 
                 board = chess.Board()
                 result = engine.play(board, chess.engine.Limit(depth=3), info=chess.engine.INFO_ALL)

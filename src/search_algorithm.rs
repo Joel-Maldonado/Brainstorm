@@ -31,13 +31,26 @@ pub enum ModelMode {
 }
 
 impl ModelMode {
-    pub fn from_str(value: &str) -> Option<Self> {
+    pub fn parse_with_alias_info(value: &str) -> Option<(Self, Option<&'static str>)> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "small" => Some(Self::Small),
-            "large" => Some(Self::Large),
-            "hybrid_root" => Some(Self::HybridRoot),
+            "fast" => Some((Self::Small, None)),
+            "balanced" => Some((Self::HybridRoot, None)),
+            "accurate" => Some((Self::Large, None)),
+            "small" => Some((Self::Small, Some("model `small` is deprecated; use `fast`"))),
+            "hybrid_root" => Some((
+                Self::HybridRoot,
+                Some("model `hybrid_root` is deprecated; use `balanced`"),
+            )),
+            "large" => Some((
+                Self::Large,
+                Some("model `large` is deprecated; use `accurate`"),
+            )),
             _ => None,
         }
+    }
+
+    pub fn from_str(value: &str) -> Option<Self> {
+        Self::parse_with_alias_info(value).map(|(mode, _)| mode)
     }
 }
 

@@ -86,7 +86,7 @@ The engine now exposes the following UCI options:
 
 * `Hash` (MB)
 * `Threads` (controls root search worker threads; default is `min(available cores, 8)`)
-* `Model` (`small`, `large`, `hybrid_root`)
+* `Model` (`fast`, `balanced`, `accurate`; deprecated aliases: `small`, `hybrid_root`, `large`)
 * `Device` (`auto`, `cpu`, `cuda`)
 * `DebugLog` (`true`/`false`)
 
@@ -105,8 +105,8 @@ It also supports full go-time controls:
 * `cargo bench --bench speed_benchmarks` for Rust micro/meso benchmarks:
   * board feature encoding and tensor conversion
   * move ordering (all moves and captures)
-  * small/large model inference on CPU
-  * depth-limited search throughput on CPU (`small`, `large`, `hybrid_root`)
+  * fast/accurate model inference on CPU
+  * depth-limited search throughput on CPU (`fast`, `balanced`, `accurate`)
 * `scripts/bench_uci.py` for end-to-end UCI speed regression runs across:
   * model/thread/hash configuration matrices
   * depth and movetime limits
@@ -122,7 +122,7 @@ Example UCI benchmark sweep:
 uv run --python 3.12 env LIBTORCH_USE_PYTORCH=1 cargo build --release
 python3 scripts/bench_uci.py \
   --engine ./target/release/brainstorm \
-  --models small,large,hybrid_root \
+  --models fast,balanced,accurate \
   --hash-mb 64,256 \
   --depths 4,6 \
   --movetimes-ms 100,250,500 \
@@ -138,7 +138,7 @@ Use this when you want a repeatable, local Elo estimate for Brainstorm:
 python3 scripts/estimate_elo.py \
   --brainstorm ./brainstorm \
   --stockfish stockfish \
-  --models small,large,hybrid_root \
+  --models fast,balanced,accurate \
   --sf-elos 1200,1400,1600,1800,2000 \
   --pairs-per-elo 12 \
   --movetime-ms 200 \
@@ -158,7 +158,7 @@ For a much faster rough estimate:
 
 ```bash
 python3 scripts/estimate_elo.py \
-  --models small \
+  --models fast \
   --sf-elos 1320,1500,1700 \
   --pairs-per-elo 3 \
   --movetime-ms 50 \

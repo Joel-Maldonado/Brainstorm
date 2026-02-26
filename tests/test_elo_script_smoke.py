@@ -128,7 +128,7 @@ def _write_fake_uci_engine(
                 print("option name Threads type spin default 1 min 1 max 8", flush=True)
 
                 if ROLE == "brainstorm":
-                    print("option name Model type combo default small var small var large var hybrid_root", flush=True)
+                    print("option name Model type combo default fast var fast var balanced var accurate", flush=True)
                     print("option name DebugLog type check default false", flush=True)
                 else:
                     print("option name UCI_LimitStrength type check default false", flush=True)
@@ -201,7 +201,7 @@ class EloScriptSmokeTest(unittest.TestCase):
                 "--stockfish",
                 str(stockfish),
                 "--models",
-                "small",
+                "fast",
                 "--sf-elos",
                 "1200,1400",
                 "--pairs-per-elo",
@@ -262,7 +262,7 @@ class EloScriptSmokeTest(unittest.TestCase):
                     "--stockfish",
                     str(temp / "does_not_exist_stockfish"),
                     "--models",
-                    "small",
+                    "fast",
                     "--sf-elos",
                     "1200",
                     "--pairs-per-elo",
@@ -298,7 +298,7 @@ class EloScriptSmokeTest(unittest.TestCase):
                     "--stockfish",
                     str(stockfish),
                     "--models",
-                    "small",
+                    "fast",
                     "--sf-elos",
                     "1200",
                     "--pairs-per-elo",
@@ -343,7 +343,7 @@ class EloScriptSmokeTest(unittest.TestCase):
                     "--stockfish",
                     str(stockfish),
                     "--models",
-                    "small",
+                    "fast",
                     "--sf-elos",
                     "1200,1400",
                     "--pairs-per-elo",

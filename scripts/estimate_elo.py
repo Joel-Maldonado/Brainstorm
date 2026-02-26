@@ -25,7 +25,7 @@ except Exception as exc:  # pragma: no cover - exercised by dependency checks
     _CHESS_IMPORT_ERROR = exc
 
 
-DEFAULT_MODELS = ["small", "large", "hybrid_root"]
+DEFAULT_MODELS = ["fast", "balanced", "accurate"]
 DEFAULT_SF_ELOS = [1200, 1400, 1600, 1800, 2000]
 MIN_SCORE_FOR_ELO = 0.01
 MAX_SCORE_FOR_ELO = 0.99
@@ -34,6 +34,14 @@ MIN_ANCHOR_STD_ELO = 1.0
 DEFAULT_STOCKFISH_ELO_MIN = 1200
 DEFAULT_STOCKFISH_ELO_MAX = 3200
 THREAD_DEFAULT_CAP = 8
+MODEL_ALIASES: Dict[str, str] = {
+    "fast": "fast",
+    "balanced": "balanced",
+    "accurate": "accurate",
+    "small": "fast",
+    "hybrid_root": "balanced",
+    "large": "accurate",
+}
 
 
 @dataclass(frozen=True)
@@ -92,7 +100,19 @@ def parse_csv_items(value: str) -> List[str]:
 
 
 def parse_models(value: str) -> List[str]:
-    return parse_csv_items(value)
+    parsed: List[str] = []
+    seen: set[str] = set()
+    for raw in parse_csv_items(value):
+        token = raw.lower()
+        canonical = MODEL_ALIASES.get(token)
+        if canonical is None:
+            raise argparse.ArgumentTypeError(f"invalid model value: {raw}")
+        if token != canonical:
+            print(f"[elo] warning: model `{raw}` is deprecated, using `{canonical}`", file=sys.stderr)
+        if canonical not in seen:
+            parsed.append(canonical)
+            seen.add(canonical)
+    return parsed
 
 
 def parse_sf_elos(value: str) -> List[int]:
@@ -731,7 +751,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--models",
         default=",".join(DEFAULT_MODELS),
         type=parse_models,
-        help="Comma-separated Brainstorm model modes",
+        help="Comma-separated Brainstorm model modes (fast, balanced, accurate; legacy aliases accepted)",
     )
     parser.add_argument(
         "--sf-elos",

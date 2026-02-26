@@ -83,7 +83,7 @@ impl Engine {
                 .map(|count| count.get())
                 .unwrap_or(1)
         );
-        println!("option name Model type combo default small var small var large var hybrid_root");
+        println!("option name Model type combo default fast var fast var balanced var accurate");
         println!("option name Device type combo default auto var auto var cpu var cuda");
         println!("option name DebugLog type check default false");
         println!("uciok");
@@ -122,8 +122,11 @@ impl Engine {
                     }
                 }
                 "model" => {
-                    if let Some(mode) = ModelMode::from_str(&value) {
+                    if let Some((mode, alias_message)) = ModelMode::parse_with_alias_info(&value) {
                         self.options.model_mode = mode;
+                        if let Some(message) = alias_message {
+                            println!("info string {}", message);
+                        }
                     }
                 }
                 "debuglog" => {

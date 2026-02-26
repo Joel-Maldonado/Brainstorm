@@ -104,7 +104,7 @@ fn benchmark_model_inference(c: &mut Criterion) {
 
     for (name, board) in &positions {
         group.bench_with_input(
-            BenchmarkId::new("small_pipeline", name),
+            BenchmarkId::new("fast_pipeline", name),
             board,
             |b, board| {
                 b.iter(|| {
@@ -120,7 +120,7 @@ fn benchmark_model_inference(c: &mut Criterion) {
 
     for (name, board) in &positions {
         group.bench_with_input(
-            BenchmarkId::new("large_pipeline", name),
+            BenchmarkId::new("accurate_pipeline", name),
             board,
             |b, board| {
                 b.iter(|| {
@@ -135,7 +135,7 @@ fn benchmark_model_inference(c: &mut Criterion) {
     }
 
     let reference_input = board_to_tensor(&positions[1].1).to_device(Device::Cpu);
-    group.bench_function("small_forward_only", |b| {
+    group.bench_function("fast_forward_only", |b| {
         b.iter(|| {
             let _ = models
                 .small
@@ -143,7 +143,7 @@ fn benchmark_model_inference(c: &mut Criterion) {
                 .expect("small model forward should succeed");
         });
     });
-    group.bench_function("large_forward_only", |b| {
+    group.bench_function("accurate_forward_only", |b| {
         b.iter(|| {
             let _ = models
                 .large
@@ -170,10 +170,20 @@ fn benchmark_search(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(10));
 
     let cases: [(&str, ModelMode, u32, &str); 4] = [
-        ("small_d2_startpos", ModelMode::Small, 2, STARTPOS_FEN),
-        ("small_d3_middlegame", ModelMode::Small, 3, MIDDLEGAME_FEN),
-        ("large_d2_middlegame", ModelMode::Large, 2, MIDDLEGAME_FEN),
-        ("hybrid_d3_tactical", ModelMode::HybridRoot, 3, TACTICAL_FEN),
+        ("fast_d2_startpos", ModelMode::Small, 2, STARTPOS_FEN),
+        ("fast_d3_middlegame", ModelMode::Small, 3, MIDDLEGAME_FEN),
+        (
+            "accurate_d2_middlegame",
+            ModelMode::Large,
+            2,
+            MIDDLEGAME_FEN,
+        ),
+        (
+            "balanced_d3_tactical",
+            ModelMode::HybridRoot,
+            3,
+            TACTICAL_FEN,
+        ),
     ];
 
     for (name, model_mode, depth, fen) in cases {

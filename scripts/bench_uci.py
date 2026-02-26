@@ -8,6 +8,7 @@ import math
 import os
 import pathlib
 import statistics
+import sys
 import time
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence, Tuple
@@ -29,6 +30,14 @@ POSITIONS: Dict[str, str] = {
     "imbalanced": "r2q1rk1/pbpn1pp1/1p1bpn1p/3p4/3P4/2NBPN2/PPQ2PPP/R1B2RK1 w - - 2 10",
 }
 THREAD_DEFAULT_CAP = 8
+MODEL_ALIASES: Dict[str, str] = {
+    "fast": "fast",
+    "balanced": "balanced",
+    "accurate": "accurate",
+    "small": "fast",
+    "hybrid_root": "balanced",
+    "large": "accurate",
+}
 
 
 @dataclass(frozen=True)
@@ -124,6 +133,17 @@ def parse_thread_values(value: str) -> List[int]:
         except ValueError as exc:
             raise argparse.ArgumentTypeError(f"invalid thread value: {item}") from exc
     return parsed
+
+
+def normalize_model_name(value: str) -> Tuple[str, str | None]:
+    raw = value.strip()
+    token = raw.lower()
+    canonical = MODEL_ALIASES.get(token)
+    if canonical is None:
+        raise argparse.ArgumentTypeError(f"invalid model value: {value}")
+    if token != canonical:
+        return canonical, f"model `{raw}` is deprecated, use `{canonical}`"
+    return canonical, None
 
 
 def dedupe_sorted(values: Iterable[int]) -> List[int]:
@@ -242,8 +262,8 @@ def main() -> None:
     parser.add_argument("--engine", default="./brainstorm", help="Engine binary path")
     parser.add_argument(
         "--models",
-        default="small,large,hybrid_root",
-        help="Comma-separated model list",
+        default="fast,balanced,accurate",
+        help="Comma-separated model list (legacy aliases: small, hybrid_root, large)",
     )
     parser.add_argument(
         "--threads",
@@ -302,7 +322,16 @@ def main() -> None:
     if args.warmup < 0:
         raise SystemExit("--warmup must be >= 0")
 
-    models = parse_csv_items(args.models)
+    raw_models = parse_csv_items(args.models)
+    models: List[str] = []
+    seen_models = set()
+    for raw_model in raw_models:
+        model, warning = normalize_model_name(raw_model)
+        if warning:
+            print(f"[bench] warning: {warning}", file=sys.stderr)
+        if model not in seen_models:
+            models.append(model)
+            seen_models.add(model)
     thread_values = parse_thread_values(args.threads)
     hash_values = parse_csv_ints(args.hash_mb)
 
