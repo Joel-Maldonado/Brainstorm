@@ -1,10 +1,12 @@
 use pleco::BitMove;
 use std::io::{self, BufRead};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{
     mpsc::{channel, TryRecvError},
     Arc, Mutex,
 };
 use std::thread;
+use std::time::Duration;
 
 mod engine;
 mod search_algorithm;
@@ -13,60 +15,65 @@ mod utils;
 use engine::Engine;
 
 fn main() {
-    println!("Brainstorm v0.1");
-
-    let engine = Arc::new(Mutex::new(Engine::new(
-        "models/eval_params264k_norm_mse0.117666_jit.pt",
-        // "models/eval_660k_norm_mse_0.026550_jit.pt",
-    )));
-
-    // Create a channel for communicating best moves
+    let engine = Arc::new(Mutex::new(Engine::new()));
     let (tx, rx) = channel::<BitMove>();
+    let running = Arc::new(AtomicBool::new(true));
 
-    let engine_for_thread = Arc::clone(&engine);
+    let engine_for_input = Arc::clone(&engine);
+    let running_for_input = Arc::clone(&running);
 
-    // Spawn a new thread to read commands from stdin (Loops every time a new command is received)
     thread::spawn(move || {
         let stdin = io::stdin();
         for line in stdin.lock().lines() {
-            let command = line.unwrap();
-            println!("Received command: {}", command);
+            let command = match line {
+                Ok(command) => command,
+                Err(_) => continue,
+            };
 
-            let mut engine = engine_for_thread.lock().unwrap();
+            let mut engine = engine_for_input.lock().unwrap();
             match command.split_whitespace().next() {
                 Some("uci") => engine.uci(),
                 Some("isready") => engine.isready(),
+                Some("setoption") => engine.setoption(&command),
                 Some("ucinewgame") => engine.ucinewgame(),
                 Some("position") => engine.position(&command),
-                Some("go") => engine.go(&command, tx.clone()), // Pass the Sender to go
+                Some("go") => engine.go(&command, tx.clone()),
                 Some("stop") => engine.stop(),
-                Some("quit") => break,
+                Some("quit") => {
+                    engine.quit();
+                    running_for_input.store(false, Ordering::Relaxed);
+                    break;
+                }
                 Some("fen") => println!("{}", engine.board.fen()),
                 _ => {}
             }
         }
-        // Clean up
-        engine_for_thread.lock().unwrap().stop();
+        running_for_input.store(false, Ordering::Relaxed);
     });
 
-    // Main loop to update game state and receive best moves (Constantly updates)
-    loop {
+    while running.load(Ordering::Relaxed) {
         match rx.try_recv() {
             Ok(best_move) => {
-                println!("bestmove {}", best_move.to_string());
+                if best_move.is_null() {
+                    println!("bestmove 0000");
+                } else {
+                    println!("bestmove {}", best_move);
+                }
                 let mut engine = engine.lock().unwrap();
                 engine.make_move(best_move);
             }
             Err(TryRecvError::Empty) => {
-                // No message received
+                let mut engine = engine.lock().unwrap();
+                engine.finish_search_if_done();
             }
-            Err(TryRecvError::Disconnected) => {
-                // The Sender has disconnected, break out of the loop
-                break;
-            }
+            Err(TryRecvError::Disconnected) => break,
         }
 
-        // Sleep to avoid hogging the CPU
-        thread::sleep(std::time::Duration::from_millis(10));
+        thread::sleep(Duration::from_millis(2));
+    }
+
+    {
+        let mut engine = engine.lock().unwrap();
+        engine.quit();
     }
 }

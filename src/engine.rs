@@ -1,136 +1,391 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::search_algorithm::{ModelMode, SearchAlgorithm, SearchOptions, SearchRequest};
+use pleco::{BitMove, Board, Player};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::thread;
-use dashmap::DashMap;
-use pleco::BitMove;
+use std::thread::{self, JoinHandle};
 
-use crate::search_algorithm::SearchAlgorithm;
+const SMALL_MODEL_PATH: &str = "models/eval_params264k_norm_mse0.117666_jit.pt";
+const LARGE_MODEL_PATH: &str = "models/eval_660k_norm_mse_0.026550_jit.pt";
+const MAX_HASH_MB: usize = 4096;
+const DEFAULT_FALLBACK_MOVETIME_MS: u64 = 2_000;
 
 pub struct Engine {
-    pub board: pleco::Board,
+    pub board: Board,
     pub search_algorithm: SearchAlgorithm,
+    options: SearchOptions,
+    position_history: Vec<u64>,
+    search_handle: Option<JoinHandle<()>>,
 }
 
-
 impl Engine {
-    pub fn new(model_path: &str) -> Self {
-        let board = pleco::Board::default();
-        let evaluator = Arc::new(tch::CModule::load(model_path).unwrap());
-        let should_stop = Arc::new(AtomicBool::new(false));
-        let search_algorithm = SearchAlgorithm::new(evaluator, Some(should_stop), Arc::new(DashMap::new()));
-        
-        Engine {
+    pub fn new() -> Self {
+        let board = Board::default();
+        let available_threads = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1);
+
+        let small_evaluator =
+            Arc::new(tch::CModule::load(SMALL_MODEL_PATH).expect("failed to load small model"));
+        let large_evaluator =
+            Arc::new(tch::CModule::load(LARGE_MODEL_PATH).expect("failed to load large model"));
+        let should_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let search_algorithm = SearchAlgorithm::new(small_evaluator, large_evaluator, should_stop);
+
+        let options = SearchOptions {
+            hash_mb: 64,
+            threads: available_threads,
+            model_mode: ModelMode::Small,
+            debug_log: false,
+        };
+
+        let root_key = board.zobrist();
+
+        Self {
             board,
             search_algorithm,
+            options,
+            position_history: vec![root_key],
+            search_handle: None,
         }
     }
 
     pub fn uci(&self) {
         println!("id name Brainstorm");
         println!("id author JoelM");
+        println!("option name Hash type spin default 64 min 1 max 4096");
+        println!(
+            "option name Threads type spin default {} min 1 max {}",
+            self.options.threads,
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1)
+        );
+        println!("option name Model type combo default small var small var large var hybrid_root");
+        println!("option name DebugLog type check default false");
         println!("uciok");
     }
 
     pub fn isready(&self) {
         println!("readyok");
     }
-    
+
     pub fn ucinewgame(&mut self) {
-        self.board = pleco::Board::default();
-        self.search_algorithm.transposition_table.clear();
+        self.stop_and_join_search();
+        self.board = Board::default();
+        self.position_history.clear();
+        self.position_history.push(self.board.zobrist());
+    }
+
+    pub fn setoption(&mut self, command: &str) {
+        if let Some((name, value)) = parse_option_parts(command) {
+            match name.to_ascii_lowercase().as_str() {
+                "hash" => {
+                    if let Ok(hash_mb) = value.parse::<usize>() {
+                        self.options.hash_mb = hash_mb.clamp(1, MAX_HASH_MB);
+                    }
+                }
+                "threads" => {
+                    if let Ok(threads) = value.parse::<usize>() {
+                        let max_threads = std::thread::available_parallelism()
+                            .map(|count| count.get())
+                            .unwrap_or(1);
+                        self.options.threads = threads.clamp(1, max_threads);
+                    }
+                }
+                "model" => {
+                    if let Some(mode) = ModelMode::from_str(&value) {
+                        self.options.model_mode = mode;
+                    }
+                }
+                "debuglog" => {
+                    self.options.debug_log = parse_bool(&value).unwrap_or(self.options.debug_log);
+                }
+                _ => {}
+            }
+        }
     }
 
     pub fn position(&mut self, command: &str) {
-        let mut words = command.split_whitespace();
-        words.next(); // Skip the "position" word
+        self.stop_and_join_search();
 
-        match words.next() {
-            Some("fen") => {
-                let fen: String = words.clone().take_while(|&word| word != "moves").collect::<Vec<_>>().join(" ");
-                self.board = pleco::Board::from_fen(&fen).expect("Invalid FEN");
-            },
-            Some("startpos") => {
-                self.board = pleco::Board::default();
-                words.next(); // Skip the "moves" word if present
-
-                for move_str in words {
-                    if !self.board.apply_uci_move(move_str) {
-                        println!("Invalid move: {}", move_str);
-                    }
-                }
-            },
-            _ => return, // Malformed command
+        let tokens: Vec<&str> = command.split_whitespace().collect();
+        if tokens.len() < 2 {
+            return;
         }
 
-        let fen = self.board.fen();
-        let mut counter = self.search_algorithm.position_count.entry(fen).or_insert(0);
-        *counter += 1;
+        match tokens[1] {
+            "startpos" => {
+                self.board = Board::default();
+                self.position_history.clear();
+                self.position_history.push(self.board.zobrist());
 
+                let mut idx = 2;
+                if idx < tokens.len() && tokens[idx] == "moves" {
+                    idx += 1;
+                    self.apply_moves_and_track(&tokens[idx..]);
+                }
+            }
+            "fen" => {
+                let mut idx = 2;
+                let mut fen_parts = Vec::new();
+                while idx < tokens.len() && tokens[idx] != "moves" {
+                    fen_parts.push(tokens[idx]);
+                    idx += 1;
+                }
+                let fen = fen_parts.join(" ");
+                match Board::from_fen(&fen) {
+                    Ok(board) => {
+                        self.board = board;
+                        self.position_history.clear();
+                        self.position_history.push(self.board.zobrist());
+                    }
+                    Err(_) => {
+                        println!("info string Invalid FEN");
+                        return;
+                    }
+                }
+
+                if idx < tokens.len() && tokens[idx] == "moves" {
+                    idx += 1;
+                    self.apply_moves_and_track(&tokens[idx..]);
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn go(&mut self, command: &str, tx: Sender<BitMove>) {
-        let options = self.parse_go_options(command);
+        self.stop_and_join_search();
 
-        // Cloning necessary states and objects for the new thread
-        let mut board_clone = self.board.clone();
-        let evaluator_clone = self.search_algorithm.evaluator.clone();
-        let should_stop_clone = self.search_algorithm.should_stop.clone();
-        let position_count_clone = self.search_algorithm.position_count.clone();  // New line
-    
-        // Set default values if options are not provided
-        let max_time = options.max_time_ms.unwrap_or(10_000);
-        let max_depth = options.max_depth.unwrap_or(5);
+        let go_options = self.parse_go_options(command);
+        let request = self.build_search_request(&go_options);
 
-        println!("Searching to depth {} or {} ms", max_depth, max_time);    
-    
-        // Spawn a new thread to handle the search
-        let _ = thread::spawn(move || {
-            // Initialize a new SearchAlgorithm instance with cloned states and objects
-            let search_algo = SearchAlgorithm::new(evaluator_clone, Some(should_stop_clone), position_count_clone); // Modified line
-            let best_move = search_algo.search(&mut board_clone, max_depth, max_time);
-            
-            // Send the best move back via the channel
-            tx.send(best_move).expect("Could not send best move");
-        });
+        let board_clone = self.board.parallel_clone();
+        let history = self.position_history.clone();
+        let search_algorithm = self.search_algorithm.clone();
+        let options = self.options.clone();
+
+        self.search_handle = Some(thread::spawn(move || {
+            let result = search_algorithm.search(&board_clone, request, &options, &history);
+            if options.debug_log {
+                println!(
+                    "info string depth={} score_cp={} nodes={} elapsed_ms={}",
+                    result.depth,
+                    result.score_cp,
+                    result.nodes,
+                    result.elapsed.as_millis()
+                );
+            }
+            let _ = tx.send(result.best_move);
+        }));
     }
-    
 
     pub fn make_move(&mut self, best_move: BitMove) {
-        self.board.apply_move(best_move);
+        if !best_move.is_null() {
+            self.board.apply_move(best_move);
+            self.position_history.push(self.board.zobrist());
+        }
+        self.finish_search_if_done();
     }
 
     pub fn stop(&mut self) {
-        self.search_algorithm.should_stop.store(true, Ordering::Relaxed);
+        self.search_algorithm
+            .should_stop
+            .store(true, Ordering::Relaxed);
+    }
+
+    pub fn quit(&mut self) {
+        self.stop_and_join_search();
+    }
+
+    pub fn finish_search_if_done(&mut self) {
+        if self
+            .search_handle
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(false)
+        {
+            if let Some(handle) = self.search_handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn stop_and_join_search(&mut self) {
+        self.stop();
+        if let Some(handle) = self.search_handle.take() {
+            let _ = handle.join();
+        }
+        self.search_algorithm
+            .should_stop
+            .store(false, Ordering::Relaxed);
+    }
+
+    fn apply_moves_and_track(&mut self, moves: &[&str]) {
+        for mv in moves {
+            if self.board.apply_uci_move(mv) {
+                self.position_history.push(self.board.zobrist());
+            } else {
+                println!("info string Invalid move {}", mv);
+                break;
+            }
+        }
     }
 
     fn parse_go_options(&self, command: &str) -> GoOptions {
-        let mut options = GoOptions {
-            max_time_ms: None,
-            max_depth: None,
-        };
+        let mut options = GoOptions::default();
+        let mut iter = command.split_whitespace().skip(1);
 
-        let mut iter = command.split_whitespace();
-        iter.next(); // Skip the "go" command itself
-
-        while let Some(option) = iter.next() {
-            match option {
-                "depth" => options.max_depth = iter.next().and_then(|s| s.parse().ok()),
-                "movetime" => options.max_time_ms = iter.next().and_then(|s| s.parse().ok()),
-                "infinite" =>  {
-                    options.max_time_ms = Some(999_000);
-                    options.max_depth = Some(999);
-                },
+        while let Some(token) = iter.next() {
+            match token {
+                "depth" => options.depth = iter.next().and_then(|value| value.parse::<u32>().ok()),
+                "movetime" => {
+                    options.movetime_ms = iter.next().and_then(|value| value.parse::<u64>().ok())
+                }
+                "wtime" => {
+                    options.wtime_ms = iter.next().and_then(|value| value.parse::<u64>().ok())
+                }
+                "btime" => {
+                    options.btime_ms = iter.next().and_then(|value| value.parse::<u64>().ok())
+                }
+                "winc" => options.winc_ms = iter.next().and_then(|value| value.parse::<u64>().ok()),
+                "binc" => options.binc_ms = iter.next().and_then(|value| value.parse::<u64>().ok()),
+                "movestogo" => {
+                    options.movestogo = iter.next().and_then(|value| value.parse::<u32>().ok())
+                }
+                "infinite" => options.infinite = true,
                 _ => {}
             }
         }
 
         options
     }
+
+    fn build_search_request(&self, options: &GoOptions) -> SearchRequest {
+        let max_depth = options.depth.unwrap_or(64).max(1);
+
+        if options.infinite {
+            return SearchRequest {
+                max_depth,
+                soft_time_ms: None,
+                hard_time_ms: None,
+            };
+        }
+
+        if let Some(movetime_ms) = options.movetime_ms {
+            let adjusted = movetime_ms
+                .saturating_sub(safety_margin(movetime_ms))
+                .max(1);
+            return SearchRequest {
+                max_depth,
+                soft_time_ms: Some(adjusted),
+                hard_time_ms: Some(adjusted),
+            };
+        }
+
+        if let Some(allocated) = self.allocate_clock_time_ms(options) {
+            let hard = allocated.saturating_sub(safety_margin(allocated)).max(1);
+            let soft = hard.saturating_mul(9) / 10;
+            return SearchRequest {
+                max_depth,
+                soft_time_ms: Some(soft.max(1)),
+                hard_time_ms: Some(hard),
+            };
+        }
+
+        if options.depth.is_some() {
+            return SearchRequest {
+                max_depth,
+                soft_time_ms: None,
+                hard_time_ms: None,
+            };
+        }
+
+        let adjusted = DEFAULT_FALLBACK_MOVETIME_MS
+            .saturating_sub(safety_margin(DEFAULT_FALLBACK_MOVETIME_MS))
+            .max(1);
+        SearchRequest {
+            max_depth,
+            soft_time_ms: Some(adjusted),
+            hard_time_ms: Some(adjusted),
+        }
+    }
+
+    fn allocate_clock_time_ms(&self, options: &GoOptions) -> Option<u64> {
+        let (remaining_ms, increment_ms) = match self.board.turn() {
+            Player::White => (options.wtime_ms?, options.winc_ms.unwrap_or(0)),
+            Player::Black => (options.btime_ms?, options.binc_ms.unwrap_or(0)),
+        };
+
+        let moves_to_go = options.movestogo.unwrap_or(30).max(1) as u64;
+        let base = remaining_ms / moves_to_go;
+        let increment_bonus = increment_ms.saturating_mul(4) / 5;
+        let mut allocated = base.saturating_add(increment_bonus).max(20);
+
+        let cap = remaining_ms.saturating_mul(7) / 10;
+        allocated = allocated.min(cap.max(20));
+        Some(allocated)
+    }
 }
 
-
+#[derive(Default)]
 struct GoOptions {
-    max_time_ms: Option<u128>,
-    max_depth: Option<u32>,
+    depth: Option<u32>,
+    movetime_ms: Option<u64>,
+    wtime_ms: Option<u64>,
+    btime_ms: Option<u64>,
+    winc_ms: Option<u64>,
+    binc_ms: Option<u64>,
+    movestogo: Option<u32>,
+    infinite: bool,
+}
+
+fn parse_option_parts(command: &str) -> Option<(String, String)> {
+    let mut tokens = command.split_whitespace().peekable();
+    if tokens.next()? != "setoption" {
+        return None;
+    }
+
+    let mut name_parts = Vec::new();
+    let mut value_parts = Vec::new();
+    let mut in_name = false;
+    let mut in_value = false;
+
+    for token in tokens {
+        match token {
+            "name" => {
+                in_name = true;
+                in_value = false;
+            }
+            "value" => {
+                in_name = false;
+                in_value = true;
+            }
+            _ if in_name => name_parts.push(token),
+            _ if in_value => value_parts.push(token),
+            _ => {}
+        }
+    }
+
+    let name = name_parts.join(" ");
+    let value = value_parts.join(" ");
+    if name.is_empty() {
+        None
+    } else {
+        Some((name, value))
+    }
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "on" | "yes" => Some(true),
+        "false" | "0" | "off" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+fn safety_margin(time_ms: u64) -> u64 {
+    (time_ms / 25).clamp(5, 50)
 }

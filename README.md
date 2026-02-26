@@ -80,6 +80,28 @@ pip install pygame python-chess
 
 The compiled engine is **UCI-compatible** and can be used with any chess GUI that supports the UCI protocol, such as Arena or Cutechess.
 
+### UCI Options
+
+The engine now exposes the following UCI options:
+
+* `Hash` (MB)
+* `Threads`
+* `Model` (`small`, `large`, `hybrid_root`)
+* `DebugLog` (`true`/`false`)
+
+It also supports full go-time controls:
+
+* `movetime`
+* `wtime`, `btime`, `winc`, `binc`, `movestogo`
+* `depth`
+* `infinite`
+
+### Benchmark / Regression Scripts
+
+* `scripts/bench_uci.py` for timing and node-rate benchmarks.
+* `scripts/strength_suite.py` for a tactical regression suite.
+* `tests/test_uci_protocol.py` and `tests/test_time_control.py` for CI smoke tests.
+
 ## Current Status
 
 This experimental project aims to explore alternative approaches to chess engine design. While the engine is capable of playing chess, the primary objective is to test concepts related to deep learning in chess, rather than to compete with established engines.
