@@ -1,0 +1,436 @@
+{
+  "run": {
+    "created_at": "2026-02-26T04:35:53Z",
+    "run_dir": "/Users/rnoc/Projects/active/Brainstorm/results/elo/20260225-185613",
+    "brainstorm": "/Users/rnoc/Projects/active/Brainstorm/brainstorm",
+    "stockfish": "/opt/homebrew/Cellar/stockfish/18/bin/stockfish",
+    "models": [
+      "small",
+      "large",
+      "hybrid_root"
+    ],
+    "requested_sf_elos": [
+      1200,
+      1400,
+      1600,
+      1800,
+      2000
+    ],
+    "sf_elos": [
+      1320,
+      1400,
+      1600,
+      1800,
+      2000
+    ],
+    "sf_elo_range": [
+      1320,
+      3190
+    ],
+    "pairs_per_elo": 12,
+    "movetime_ms": 200,
+    "threads": 1,
+    "hash_mb": 64,
+    "openings": "/Users/rnoc/Projects/active/Brainstorm/scripts/elo_openings.jsonl",
+    "max_plies": 240,
+    "seed": 42,
+    "resume": false,
+    "scheduled_games": 360,
+    "completed_games": 360
+  },
+  "models": {
+    "small": {
+      "combined": {
+        "elo": 1879.67,
+        "std_elo": 33.56,
+        "ci95": [
+          1813.89,
+          1945.46
+        ],
+        "weights": [
+          8.005e-05,
+          6.363e-05,
+          0.00018688,
+          0.00029051,
+          0.00026656
+        ]
+      },
+      "anchors": [
+        {
+          "sf_elo": 1320,
+          "games": 24,
+          "wins": 21,
+          "draws": 2,
+          "losses": 1,
+          "mean_score": 0.9167,
+          "score_variance": 0.057971,
+          "score_se": 0.049147,
+          "score_ci95": [
+            0.8203,
+            0.99
+          ],
+          "elo_diff": 416.56,
+          "elo_estimate": 1736.56,
+          "elo_ci95": [
+            1583.81,
+            2118.25
+          ],
+          "elo_std": 111.77
+        },
+        {
+          "sf_elo": 1400,
+          "games": 24,
+          "wins": 22,
+          "draws": 2,
+          "losses": 0,
+          "mean_score": 0.9583,
+          "score_variance": 0.019928,
+          "score_se": 0.028815,
+          "score_ci95": [
+            0.9019,
+            0.99
+          ],
+          "elo_diff": 544.69,
+          "elo_estimate": 1944.69,
+          "elo_ci95": [
+            1785.31,
+            2198.25
+          ],
+          "elo_std": 125.36
+        },
+        {
+          "sf_elo": 1600,
+          "games": 24,
+          "wins": 15,
+          "draws": 2,
+          "losses": 7,
+          "mean_score": 0.6667,
+          "score_variance": 0.210145,
+          "score_se": 0.093574,
+          "score_ci95": [
+            0.4833,
+            0.8501
+          ],
+          "elo_diff": 120.41,
+          "elo_estimate": 1720.41,
+          "elo_ci95": [
+            1588.37,
+            1901.43
+          ],
+          "elo_std": 73.15
+        },
+        {
+          "sf_elo": 1800,
+          "games": 24,
+          "wins": 12,
+          "draws": 9,
+          "losses": 3,
+          "mean_score": 0.6875,
+          "score_variance": 0.126359,
+          "score_se": 0.07256,
+          "score_ci95": [
+            0.5453,
+            0.8297
+          ],
+          "elo_diff": 136.97,
+          "elo_estimate": 1936.97,
+          "elo_ci95": [
+            1831.55,
+            2075.1
+          ],
+          "elo_std": 58.67
+        },
+        {
+          "sf_elo": 2000,
+          "games": 24,
+          "wins": 7,
+          "draws": 7,
+          "losses": 10,
+          "mean_score": 0.4375,
+          "score_variance": 0.180707,
+          "score_se": 0.086772,
+          "score_ci95": [
+            0.2674,
+            0.6076
+          ],
+          "elo_diff": -43.66,
+          "elo_estimate": 1956.34,
+          "elo_ci95": [
+            1824.94,
+            2075.94
+          ],
+          "elo_std": 61.25
+        }
+      ],
+      "aggregate": {
+        "games": 120,
+        "wins": 77,
+        "draws": 22,
+        "losses": 21,
+        "mean_score": 0.7333
+      }
+    },
+    "large": {
+      "combined": {
+        "elo": 1845.96,
+        "std_elo": 31.22,
+        "ci95": [
+          1784.76,
+          1907.16
+        ],
+        "weights": [
+          3.177e-05,
+          8.006e-05,
+          0.00026388,
+          0.00032594,
+          0.00032418
+        ]
+      },
+      "anchors": [
+        {
+          "sf_elo": 1320,
+          "games": 24,
+          "wins": 23,
+          "draws": 1,
+          "losses": 0,
+          "mean_score": 0.9792,
+          "score_variance": 0.010417,
+          "score_se": 0.020833,
+          "score_ci95": [
+            0.9383,
+            0.99
+          ],
+          "elo_diff": 668.84,
+          "elo_estimate": 1988.84,
+          "elo_ci95": [
+            1792.92,
+            2118.25
+          ],
+          "elo_std": 177.41
+        },
+        {
+          "sf_elo": 1400,
+          "games": 24,
+          "wins": 21,
+          "draws": 1,
+          "losses": 2,
+          "mean_score": 0.8958,
+          "score_variance": 0.086504,
+          "score_se": 0.060036,
+          "score_ci95": [
+            0.7782,
+            0.99
+          ],
+          "elo_diff": 373.8,
+          "elo_estimate": 1773.8,
+          "elo_ci95": [
+            1618.01,
+            2198.25
+          ],
+          "elo_std": 111.76
+        },
+        {
+          "sf_elo": 1600,
+          "games": 24,
+          "wins": 13,
+          "draws": 8,
+          "losses": 3,
+          "mean_score": 0.7083,
+          "score_variance": 0.128623,
+          "score_se": 0.073207,
+          "score_ci95": [
+            0.5648,
+            0.8518
+          ],
+          "elo_diff": 154.14,
+          "elo_estimate": 1754.14,
+          "elo_ci95": [
+            1645.32,
+            1903.82
+          ],
+          "elo_std": 61.56
+        },
+        {
+          "sf_elo": 1800,
+          "games": 24,
+          "wins": 8,
+          "draws": 10,
+          "losses": 6,
+          "mean_score": 0.5417,
+          "score_variance": 0.150362,
+          "score_se": 0.079152,
+          "score_ci95": [
+            0.3865,
+            0.6968
+          ],
+          "elo_diff": 29.02,
+          "elo_estimate": 1829.02,
+          "elo_ci95": [
+            1719.75,
+            1944.56
+          ],
+          "elo_std": 55.39
+        },
+        {
+          "sf_elo": 2000,
+          "games": 24,
+          "wins": 5,
+          "draws": 10,
+          "losses": 9,
+          "mean_score": 0.4167,
+          "score_variance": 0.144928,
+          "score_se": 0.077709,
+          "score_ci95": [
+            0.2644,
+            0.569
+          ],
+          "elo_diff": -58.45,
+          "elo_estimate": 1941.55,
+          "elo_ci95": [
+            1822.21,
+            2048.24
+          ],
+          "elo_std": 55.54
+        }
+      ],
+      "aggregate": {
+        "games": 120,
+        "wins": 70,
+        "draws": 30,
+        "losses": 20,
+        "mean_score": 0.7083
+      }
+    },
+    "hybrid_root": {
+      "combined": {
+        "elo": 1857.68,
+        "std_elo": 32.89,
+        "ci95": [
+          1793.21,
+          1922.14
+        ],
+        "weights": [
+          8.336e-05,
+          0.00010692,
+          0.00022572,
+          0.00022357,
+          0.00028485
+        ]
+      },
+      "anchors": [
+        {
+          "sf_elo": 1320,
+          "games": 24,
+          "wins": 21,
+          "draws": 0,
+          "losses": 3,
+          "mean_score": 0.875,
+          "score_variance": 0.11413,
+          "score_se": 0.06896,
+          "score_ci95": [
+            0.7398,
+            0.99
+          ],
+          "elo_diff": 338.04,
+          "elo_estimate": 1658.04,
+          "elo_ci95": [
+            1501.56,
+            2118.25
+          ],
+          "elo_std": 109.53
+        },
+        {
+          "sf_elo": 1400,
+          "games": 24,
+          "wins": 20,
+          "draws": 3,
+          "losses": 1,
+          "mean_score": 0.8958,
+          "score_variance": 0.064764,
+          "score_se": 0.051947,
+          "score_ci95": [
+            0.794,
+            0.99
+          ],
+          "elo_diff": 373.8,
+          "elo_estimate": 1773.8,
+          "elo_ci95": [
+            1634.4,
+            2198.25
+          ],
+          "elo_std": 96.71
+        },
+        {
+          "sf_elo": 1600,
+          "games": 24,
+          "wins": 14,
+          "draws": 6,
+          "losses": 4,
+          "mean_score": 0.7083,
+          "score_variance": 0.150362,
+          "score_se": 0.079152,
+          "score_ci95": [
+            0.5532,
+            0.8635
+          ],
+          "elo_diff": 154.14,
+          "elo_estimate": 1754.14,
+          "elo_ci95": [
+            1637.1,
+            1920.41
+          ],
+          "elo_std": 66.56
+        },
+        {
+          "sf_elo": 1800,
+          "games": 24,
+          "wins": 12,
+          "draws": 4,
+          "losses": 8,
+          "mean_score": 0.5833,
+          "score_variance": 0.210145,
+          "score_se": 0.093574,
+          "score_ci95": [
+            0.3999,
+            0.7667
+          ],
+          "elo_diff": 58.45,
+          "elo_estimate": 1858.45,
+          "elo_ci95": [
+            1729.51,
+            2006.72
+          ],
+          "elo_std": 66.88
+        },
+        {
+          "sf_elo": 2000,
+          "games": 24,
+          "wins": 9,
+          "draws": 8,
+          "losses": 7,
+          "mean_score": 0.5417,
+          "score_variance": 0.172101,
+          "score_se": 0.084681,
+          "score_ci95": [
+            0.3757,
+            0.7076
+          ],
+          "elo_diff": 29.02,
+          "elo_estimate": 2029.02,
+          "elo_ci95": [
+            1911.77,
+            2153.56
+          ],
+          "elo_std": 59.25
+        }
+      ],
+      "aggregate": {
+        "games": 120,
+        "wins": 76,
+        "draws": 21,
+        "losses": 23,
+        "mean_score": 0.7208
+      }
+    }
+  }
+}

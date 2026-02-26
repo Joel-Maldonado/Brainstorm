@@ -1,19 +1,41 @@
 use crate::search_algorithm::{ModelMode, SearchAlgorithm, SearchOptions, SearchRequest};
 use pleco::{BitMove, Board, Player};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use tch::{CModule, Device};
 
 const SMALL_MODEL_PATH: &str = "models/eval_params264k_norm_mse0.117666_jit.pt";
 const LARGE_MODEL_PATH: &str = "models/eval_660k_norm_mse_0.026550_jit.pt";
 const MAX_HASH_MB: usize = 4096;
 const DEFAULT_FALLBACK_MOVETIME_MS: u64 = 2_000;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvalDeviceChoice {
+    Auto,
+    Cpu,
+    Cuda,
+}
+
+impl EvalDeviceChoice {
+    fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "cpu" => Some(Self::Cpu),
+            "cuda" => Some(Self::Cuda),
+            _ => None,
+        }
+    }
+}
+
 pub struct Engine {
     pub board: Board,
     pub search_algorithm: SearchAlgorithm,
     options: SearchOptions,
+    device_choice: EvalDeviceChoice,
+    active_device: Device,
     position_history: Vec<u64>,
     search_handle: Option<JoinHandle<()>>,
 }
@@ -21,17 +43,18 @@ pub struct Engine {
 impl Engine {
     pub fn new() -> Self {
         let board = Board::default();
+        let should_stop = Arc::new(AtomicBool::new(false));
+        let device_choice = EvalDeviceChoice::Auto;
+        let (search_algorithm, active_device, startup_message) =
+            Self::build_search_algorithm_for_choice(device_choice, Arc::clone(&should_stop))
+                .expect("failed to initialize evaluators");
+        if let Some(message) = startup_message {
+            eprintln!("[engine] {message}");
+        }
+
         let available_threads = std::thread::available_parallelism()
             .map(|count| count.get())
             .unwrap_or(1);
-
-        let small_evaluator =
-            Arc::new(tch::CModule::load(SMALL_MODEL_PATH).expect("failed to load small model"));
-        let large_evaluator =
-            Arc::new(tch::CModule::load(LARGE_MODEL_PATH).expect("failed to load large model"));
-        let should_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-        let search_algorithm = SearchAlgorithm::new(small_evaluator, large_evaluator, should_stop);
 
         let options = SearchOptions {
             hash_mb: 64,
@@ -46,6 +69,8 @@ impl Engine {
             board,
             search_algorithm,
             options,
+            device_choice,
+            active_device,
             position_history: vec![root_key],
             search_handle: None,
         }
@@ -63,6 +88,7 @@ impl Engine {
                 .unwrap_or(1)
         );
         println!("option name Model type combo default small var small var large var hybrid_root");
+        println!("option name Device type combo default auto var auto var cpu var cuda");
         println!("option name DebugLog type check default false");
         println!("uciok");
     }
@@ -101,6 +127,29 @@ impl Engine {
                 }
                 "debuglog" => {
                     self.options.debug_log = parse_bool(&value).unwrap_or(self.options.debug_log);
+                }
+                "device" => {
+                    if let Some(choice) = EvalDeviceChoice::from_str(&value) {
+                        self.stop_and_join_search();
+                        let should_stop = Arc::clone(&self.search_algorithm.should_stop);
+                        match Self::build_search_algorithm_for_choice(choice, should_stop) {
+                            Ok((search_algorithm, active_device, warning)) => {
+                                self.search_algorithm = search_algorithm;
+                                self.device_choice = choice;
+                                self.active_device = active_device;
+                                if let Some(message) = warning {
+                                    println!("info string {}", message);
+                                }
+                                println!(
+                                    "info string evaluator_device={}",
+                                    device_to_label(self.active_device)
+                                );
+                            }
+                            Err(err) => {
+                                println!("info string failed to set Device: {}", err);
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -328,6 +377,79 @@ impl Engine {
         allocated = allocated.min(cap.max(20));
         Some(allocated)
     }
+
+    fn build_search_algorithm_for_choice(
+        choice: EvalDeviceChoice,
+        should_stop: Arc<AtomicBool>,
+    ) -> Result<(SearchAlgorithm, Device, Option<String>), String> {
+        let target = resolve_device_for_choice(choice);
+        let mut warning = device_choice_warning(choice, target);
+
+        match Self::build_search_algorithm_on_device(target, Arc::clone(&should_stop)) {
+            Ok(search_algorithm) => Ok((search_algorithm, target, warning)),
+            Err(err) if target != Device::Cpu => {
+                warning = Some(match warning {
+                    Some(existing) => {
+                        format!("{existing}; fallback to cpu because load failed: {err}")
+                    }
+                    None => format!(
+                        "falling back to cpu because loading models on {} failed: {}",
+                        device_to_label(target),
+                        err
+                    ),
+                });
+                let search_algorithm =
+                    Self::build_search_algorithm_on_device(Device::Cpu, should_stop)?;
+                Ok((search_algorithm, Device::Cpu, warning))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn build_search_algorithm_on_device(
+        device: Device,
+        should_stop: Arc<AtomicBool>,
+    ) -> Result<SearchAlgorithm, String> {
+        let small_evaluator = CModule::load_on_device(SMALL_MODEL_PATH, device).map_err(|err| {
+            format!(
+                "small model load failed on {}: {err}",
+                device_to_label(device)
+            )
+        })?;
+        let large_evaluator = CModule::load_on_device(LARGE_MODEL_PATH, device).map_err(|err| {
+            format!(
+                "large model load failed on {}: {err}",
+                device_to_label(device)
+            )
+        })?;
+
+        Self::probe_model_forward(&small_evaluator, device, "small")?;
+        Self::probe_model_forward(&large_evaluator, device, "large")?;
+
+        let small_evaluator = Arc::new(small_evaluator);
+        let large_evaluator = Arc::new(large_evaluator);
+        Ok(SearchAlgorithm::new(
+            small_evaluator,
+            large_evaluator,
+            device,
+            should_stop,
+        ))
+    }
+
+    fn probe_model_forward(model: &CModule, device: Device, label: &str) -> Result<(), String> {
+        let probe = tch::Tensor::from_slice(&[0_f32; 775])
+            .view([1, 775])
+            .to_device(device);
+        let _ = model.forward_ts(&[probe]).map_err(|err| {
+            format!(
+                "{} model forward probe failed on {}: {}",
+                label,
+                device_to_label(device),
+                err
+            )
+        })?;
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -388,4 +510,42 @@ fn parse_bool(value: &str) -> Option<bool> {
 
 fn safety_margin(time_ms: u64) -> u64 {
     (time_ms / 25).clamp(5, 50)
+}
+
+fn resolve_device_for_choice(choice: EvalDeviceChoice) -> Device {
+    match choice {
+        EvalDeviceChoice::Auto => {
+            if tch::Cuda::is_available() {
+                Device::Cuda(0)
+            } else {
+                Device::Cpu
+            }
+        }
+        EvalDeviceChoice::Cpu => Device::Cpu,
+        EvalDeviceChoice::Cuda => {
+            if tch::Cuda::is_available() {
+                Device::Cuda(0)
+            } else {
+                Device::Cpu
+            }
+        }
+    }
+}
+
+fn device_choice_warning(choice: EvalDeviceChoice, resolved: Device) -> Option<String> {
+    match choice {
+        EvalDeviceChoice::Cuda if !resolved.is_cuda() => {
+            Some("cuda requested but unavailable; using cpu".to_string())
+        }
+        _ => None,
+    }
+}
+
+fn device_to_label(device: Device) -> &'static str {
+    match device {
+        Device::Cpu => "cpu",
+        Device::Cuda(_) => "cuda",
+        Device::Mps => "mps",
+        Device::Vulkan => "vulkan",
+    }
 }

@@ -8,11 +8,7 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
-mod engine;
-mod search_algorithm;
-mod utils;
-
-use engine::Engine;
+use brainstorm::engine::Engine;
 
 fn main() {
     let engine = Arc::new(Mutex::new(Engine::new()));

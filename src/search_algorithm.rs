@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tch::CModule;
+use tch::{CModule, Device};
 
 const INF: i32 = 32_000;
 const MATE_SCORE: i32 = 31_000;
@@ -74,6 +74,7 @@ pub struct SearchResult {
 pub struct SearchAlgorithm {
     small_evaluator: Arc<CModule>,
     large_evaluator: Arc<CModule>,
+    eval_device: Device,
     pub should_stop: Arc<AtomicBool>,
 }
 
@@ -118,11 +119,13 @@ impl SearchAlgorithm {
     pub fn new(
         small_evaluator: Arc<CModule>,
         large_evaluator: Arc<CModule>,
+        eval_device: Device,
         should_stop: Arc<AtomicBool>,
     ) -> Self {
         Self {
             small_evaluator,
             large_evaluator,
+            eval_device,
             should_stop,
         }
     }
@@ -133,6 +136,27 @@ impl SearchAlgorithm {
         request: SearchRequest,
         options: &SearchOptions,
         game_history: &[u64],
+    ) -> SearchResult {
+        self.search_with_info(board, request, options, game_history, true)
+    }
+
+    pub fn search_quiet(
+        &self,
+        board: &Board,
+        request: SearchRequest,
+        options: &SearchOptions,
+        game_history: &[u64],
+    ) -> SearchResult {
+        self.search_with_info(board, request, options, game_history, false)
+    }
+
+    fn search_with_info(
+        &self,
+        board: &Board,
+        request: SearchRequest,
+        options: &SearchOptions,
+        game_history: &[u64],
+        emit_info: bool,
     ) -> SearchResult {
         self.should_stop.store(false, Ordering::Relaxed);
         let start = Instant::now();
@@ -152,6 +176,7 @@ impl SearchAlgorithm {
             board,
             &self.small_evaluator,
             &self.large_evaluator,
+            self.eval_device,
             self.should_stop.as_ref(),
             options,
             soft_deadline,
@@ -226,16 +251,18 @@ impl SearchAlgorithm {
             prev_score = best_score;
             completed_depth = depth;
 
-            let (score_kind, score_value) = score_to_uci(best_score);
-            println!(
-                "info depth {} score {} {} nodes {} time {} pv {}",
-                depth,
-                score_kind,
-                score_value,
-                ctx.nodes,
-                start.elapsed().as_millis(),
-                best_move
-            );
+            if emit_info {
+                let (score_kind, score_value) = score_to_uci(best_score);
+                println!(
+                    "info depth {} score {} {} nodes {} time {} pv {}",
+                    depth,
+                    score_kind,
+                    score_value,
+                    ctx.nodes,
+                    start.elapsed().as_millis(),
+                    best_move
+                );
+            }
 
             if ctx.soft_deadline_reached() {
                 break;
@@ -255,6 +282,7 @@ impl SearchAlgorithm {
 struct SearchContext<'a> {
     small_eval: &'a CModule,
     large_eval: &'a CModule,
+    eval_device: Device,
     should_stop: &'a AtomicBool,
     model_mode: ModelMode,
     _debug_log: bool,
@@ -274,6 +302,7 @@ impl<'a> SearchContext<'a> {
         board: &Board,
         small_eval: &'a CModule,
         large_eval: &'a CModule,
+        eval_device: Device,
         should_stop: &'a AtomicBool,
         options: &SearchOptions,
         soft_deadline: Option<Instant>,
@@ -295,6 +324,7 @@ impl<'a> SearchContext<'a> {
         Self {
             small_eval,
             large_eval,
+            eval_device,
             should_stop,
             model_mode: options.model_mode,
             _debug_log: options.debug_log,
@@ -678,7 +708,7 @@ impl<'a> SearchContext<'a> {
             self.small_eval
         };
 
-        let input = board_to_tensor(board);
+        let input = board_to_tensor(board).to_device(self.eval_device);
         let raw = model
             .forward_ts(&[input])
             .map(|tensor| tensor.double_value(&[]) as f32)

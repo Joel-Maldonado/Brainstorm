@@ -98,9 +98,72 @@ It also supports full go-time controls:
 
 ### Benchmark / Regression Scripts
 
-* `scripts/bench_uci.py` for timing and node-rate benchmarks.
+* `cargo bench --bench speed_benchmarks` for Rust micro/meso benchmarks:
+  * board feature encoding and tensor conversion
+  * move ordering (all moves and captures)
+  * small/large model inference on CPU
+  * depth-limited search throughput on CPU (`small`, `large`, `hybrid_root`)
+* `scripts/bench_uci.py` for end-to-end UCI speed regression runs across:
+  * model/thread/hash configuration matrices
+  * depth and movetime limits
+  * multiple benchmark positions with warmup and repeat samples
+  * JSON artifacts under `results/bench_speed/<timestamp>/`
 * `scripts/strength_suite.py` for a tactical regression suite.
+* `scripts/estimate_elo.py` for automated Elo estimation versus Stockfish UCI_Elo anchors.
 * `tests/test_uci_protocol.py` and `tests/test_time_control.py` for CI smoke tests.
+
+Example UCI benchmark sweep:
+
+```bash
+python3 scripts/bench_uci.py \
+  --engine ./brainstorm \
+  --models small,large,hybrid_root \
+  --threads 1,2 \
+  --hash-mb 64,256 \
+  --depths 4,6 \
+  --movetimes-ms 100,250,500 \
+  --repeats 5 \
+  --warmup 1
+```
+
+### Elo Estimation (Automated)
+
+Use this when you want a repeatable, local Elo estimate for Brainstorm:
+
+```bash
+python3 scripts/estimate_elo.py \
+  --brainstorm ./brainstorm \
+  --stockfish stockfish \
+  --models small,large,hybrid_root \
+  --sf-elos 1200,1400,1600,1800,2000 \
+  --pairs-per-elo 12 \
+  --movetime-ms 200 \
+  --brainstorm-device auto
+```
+
+The script writes:
+
+* `results/elo/<timestamp>/games.jsonl` with game-level records.
+* `results/elo/<timestamp>/summary.json` with per-anchor and combined Elo estimates (95% CI).
+* If a requested `--sf-elos` value is outside your Stockfish build's `UCI_Elo` range, it is automatically clipped and logged as a warning.
+* The script reuses engine processes per model to reduce startup overhead versus per-batch restarts.
+
+For a much faster rough estimate:
+
+```bash
+python3 scripts/estimate_elo.py \
+  --models small \
+  --sf-elos 1320,1500,1700 \
+  --pairs-per-elo 3 \
+  --movetime-ms 50 \
+  --max-plies 120
+```
+
+To continue an interrupted run:
+
+```bash
+python3 scripts/estimate_elo.py --resume --output-dir results/elo
+```
 
 ## Current Status
 
