@@ -93,13 +93,6 @@ The engine now exposes the following UCI options:
 Threading scope for this iteration is CPU-first: when the evaluator runs on CUDA, search worker threading is forced to `1`.
 If multithread speedups are weak on your setup, use `setoption name Threads value 1` as a fallback baseline.
 
-Model weight files are now named:
-
-* `models/brainstorm_fast_eval_jit.pt`
-* `models/brainstorm_accurate_eval_jit.pt`
-
-Legacy filenames are still accepted as fallbacks, but `models/eval_660k_norm_mse_0.026550_jit.pt` (the old "large" weight filename) is deprecated.
-
 It also supports full go-time controls:
 
 * `movetime`
@@ -107,8 +100,14 @@ It also supports full go-time controls:
 * `depth`
 * `infinite`
 
-### Benchmark / Regression Scripts
+Pretrained model weight files are named:
 
+* `models/brainstorm_fast_eval_jit.pt`
+* `models/brainstorm_accurate_eval_jit.pt`
+
+I recommend using brainstorm_fast_evail_jit, as there is a minor performance difference between the models. 
+
+### Benchmark / Regression Scripts
 * `cargo bench --bench speed_benchmarks` for Rust micro/meso benchmarks:
   * board feature encoding and tensor conversion
   * move ordering (all moves and captures)
@@ -172,23 +171,17 @@ python3 scripts/estimate_elo.py \
   --max-plies 120
 ```
 
-To continue an interrupted run:
-
-```bash
-python3 scripts/estimate_elo.py --resume --output-dir results/elo
-```
-
 ## Current Status
 
-This experimental project aims to explore alternative approaches to chess engine design. While the engine is capable of playing chess, the primary objective is to test concepts related to deep learning in chess, rather than to compete with established engines.
+This project's goal was mainly educational on my own part. I wanted to explore alternative approaches to chess engine design. While the engine is capable of playing chess, the primary objective is to test concepts related to deep learning in chess, rather than to compete with established engines.
 
 **Estimated strength (local CPU run):**
 
-* Approximately **2100 Elo** (combined estimate: **2114**, 95% CI: **1932-2296**) at roughly **3 seconds per move** on CPU (M3).
+* Approximately **2100 Elo** (combined estimate: **2114**, 95% CI: **1932-2296**) at roughly **~250 miliseconds per move** on CPU (M3 Pro CPU).
 
 **Current areas of exploration:**
 
-* Board representation techniques
-* Neural network architecture experiments
+* Board representation techniques (e.g. Encoding pieces that are attacked into bit representation)
+* Neural network architecture experiments (e.g. Better architecture)
 * Search optimization techniques
-* Evaluation speed improvements
+* Evaluation speed improvements & optimization
